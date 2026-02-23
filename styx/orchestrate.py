@@ -112,6 +112,32 @@ def discover(config, *, _pvesh_fn=None, _pveceph_fn=None, _on_warning=None):
     return topo
 
 
+# ── hosts filter ─────────────────────────────────────────────────────────────
+
+def _apply_hosts_filter(topo, hosts):
+    """Restrict topo to only the given hosts.
+
+    Orchestrator is always kept in host_ips (needed for SSH/polling) but its
+    VMs are only scheduled for shutdown if it is explicitly listed in hosts.
+    """
+    shutdown_hosts = set(hosts)
+    unknown = shutdown_hosts - set(topo.host_ips)
+    if unknown:
+        log(f'WARNING: --hosts filter references unknown host(s): '
+            f'{", ".join(sorted(unknown))}')
+    reachable = shutdown_hosts | {topo.orchestrator}
+    topo.host_ips    = {h: ip for h, ip in topo.host_ips.items() if h in reachable}
+    topo.vm_host     = {v: h  for v, h  in topo.vm_host.items()  if h in shutdown_hosts}
+    topo.vm_name     = {v: n  for v, n  in topo.vm_name.items()  if v in topo.vm_host}
+    topo.k8s_workers = [v for v in topo.k8s_workers if v in topo.vm_host]
+    topo.k8s_cp      = [v for v in topo.k8s_cp      if v in topo.vm_host]
+    if not topo.k8s_workers and not topo.k8s_cp:
+        topo.k8s_enabled = False
+    log(f'--hosts filter: shutting down {" ".join(sorted(shutdown_hosts))} '
+        f'({len(topo.vm_host)} VM(s))')
+    return topo
+
+
 # ── pre-flight (maintenance mode) ────────────────────────────────────────────
 
 def preflight(topo, config):
@@ -164,13 +190,15 @@ def preflight(topo, config):
 # ── HA ────────────────────────────────────────────────────────────────────────
 
 def _disable_ha(topo, ops, policy, scope):
-    target = set(topo.k8s_workers + topo.k8s_cp) if scope == 'k8s' else None
+    target = (
+        set(topo.k8s_workers + topo.k8s_cp) if scope == 'k8s'
+        else set(topo.vm_host)   # 'all' — only VMs we're actually shutting down
+    )
     log(f'Disabling HA resources (scope: {scope})')
     for sid in ops.get_ha_started_sids():
-        if target is not None:
-            vmid = sid.split(':', 1)[-1] if ':' in sid else sid
-            if vmid not in target:
-                continue
+        vmid = sid.split(':', 1)[-1] if ':' in sid else sid
+        if vmid not in target:
+            continue
         log(f'Disabling HA: {sid}')
         try:
             policy.execute(f'disable_ha_sid {sid}', ops.disable_ha_sid, sid)
@@ -314,6 +342,10 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None):
     p.add_argument('--config', default='/etc/styx/styx.conf')
     p.add_argument('--mode',   choices=['dry-run', 'emergency', 'maintenance'],
                    default='emergency')
+    p.add_argument('--hosts', metavar='HOST', nargs='+',
+                   help='Restrict to these hosts only (orchestrator always included)')
+    p.add_argument('--skip-poweroff', action='store_true',
+                   help='Shut down VMs but do not power off any host')
     args = p.parse_args(argv)
 
     setup_log_file(os.environ.get('LOG_FILE', '/var/log/styx.log'))
@@ -335,6 +367,9 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None):
         topo = _discover_fn(config)
     else:
         topo = discover(config, _on_warning=policy.on_warning)
+
+    if args.hosts:
+        _apply_hosts_filter(topo, args.hosts)
 
     if args.mode in ('maintenance', 'dry-run'):
         preflight(topo, config)
@@ -401,7 +436,7 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None):
         log(f'Phase {args.phase} complete')
         return
 
-    do_poweroff = should_poweroff_hosts(args.phase)
+    do_poweroff = should_poweroff_hosts(args.phase) and not args.skip_poweroff
     if do_poweroff:
         ceph_note = ', set Ceph flags' if topo.ceph_enabled else ''
         policy.phase_gate(f'VM shutdown tracks complete — about to{ceph_note} power off all hosts. Proceed?')
@@ -413,8 +448,12 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None):
 
     run_polling_loop(topo, ops, policy, do_poweroff)
 
-    if do_poweroff:
+    # Power off orchestrator only on full runs or when explicitly targeted.
+    poweroff_self = do_poweroff and (not args.hosts or topo.orchestrator in args.hosts)
+    if poweroff_self:
         log('Powering off orchestrator (self)')
         policy.execute('poweroff_self', ops.poweroff_self)
+    elif args.skip_poweroff:
+        log('All VMs stopped — --skip-poweroff: hosts not powered off')
     else:
         log(f'Phase {args.phase} complete')
