@@ -5,7 +5,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
     git \
-    jq \
+    python3 \
     socat \
     openssh-client \
     procps \
