@@ -27,11 +27,19 @@ def _read_pid(vmid):
 def _alive(pid):
     try:
         os.kill(pid, 0)
-        return True
     except ProcessLookupError:
         return False
     except PermissionError:
         return True  # exists but not ours to signal
+    # Treat zombie (Z) as dead — process has exited but not yet been reaped
+    try:
+        with open(f'/proc/{pid}/stat') as f:
+            stat = f.read()
+        state = stat.split(')')[1].split()[0]
+        return state != 'Z'
+    except OSError:
+        pass
+    return True
 
 
 def _poll_dead(pid, deadline, interval=1):
