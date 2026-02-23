@@ -17,7 +17,7 @@ from styx.discover import (
     ClusterTopology, parse_cluster_status, parse_cluster_resources,
     classify_by_tags, match_nodes_to_vms,
 )
-from styx.policy import Policy, log
+from styx.policy import Policy, log, setup_log_file
 from styx.wrappers import Operations
 
 
@@ -267,8 +267,7 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None):
     p.add_argument('--config',  default='/etc/styx/styx.conf')
     args = p.parse_args(argv)
 
-    log_file = os.environ.get('LOG_FILE', '/var/log/styx.log')
-    os.makedirs(os.path.dirname(log_file), exist_ok=True)
+    setup_log_file(os.environ.get('LOG_FILE', '/var/log/styx.log'))
 
     policy = Policy(dry_run=args.dry_run)
     config = load_config(args.config)

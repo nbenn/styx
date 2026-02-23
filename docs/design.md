@@ -31,21 +31,22 @@ Styx auto-discovers the entire environment at startup. For standard setups, **no
 | Hosts + IPs | `pvesh get /cluster/status` — extract `type=node` entries | `[hosts]` section |
 | Orchestrator | `local == 1` from cluster status | `[orchestrator]` section |
 | VM-to-host mapping | `pvesh get /cluster/resources --type vm`, filter `type == "qemu"` | — (always needed) |
-| K8s worker/CP VMIDs | `lib/k8s.py get-nodes` — match node names to VM names, classify by `node-role.kubernetes.io/control-plane` label | `[kubernetes] workers, control_plane` |
-| K8s credentials | `[kubernetes] server` + `token` (required for any k8s integration) | — |
+| K8s worker/CP VMIDs | Priority: (1) `[kubernetes] workers/control_plane` config, (2) Proxmox VM tags `styx:k8s-worker` / `styx:k8s-cp`, (3) API: match node names to VM names via `node-role.kubernetes.io/control-plane` label | `[kubernetes] workers, control_plane` |
+| K8s credentials | `[kubernetes] server` + `token` + optional `ca_cert` (required for API-based discovery) | — |
 | Ceph enabled | `pveceph status` exits 0 | `[ceph] enabled` |
-| Ceph flags | defaults: `noout, norecover, norebalance, nobackfill, nodown, noup` | `[ceph] flags` |
+| Ceph flags | defaults: `noout, norecover, norebalance, nobackfill, nodown` | `[ceph] flags` |
 | Timeouts | defaults: drain=120, vm=120 | `[timeouts]` |
 
 ### Startup Logic
 
 1. **Hosts**: `pvesh get /cluster/status --output-format json` → filter `type == "node"` → extract `name` and `ip`. The entry with `local == 1` is the orchestrator. If `[hosts]` is in config, use that instead.
 2. **VMs**: `pvesh get /cluster/resources --type vm --output-format json` → filter `type == "qemu"` (excludes LXC containers), build VMID-to-host and VMID-to-name maps. Filters out templates (`template == 1`) and stopped VMs.
-3. **Kubernetes**: if `[kubernetes] server` and `token` are configured, try `lib/k8s.py get-nodes`.
-   - If reachable: extract node names and roles. Match node names against VM names from step 2. Workers = nodes without `control-plane` role. CP = nodes with it.
-   - If name matching fails (no VM name matches any node name) → **abort with error**, ask user to provide `workers` and `control_plane` in config.
-   - If `server`/`token` not configured and no `workers`/`control_plane` in config → skip k8s entirely (Proxmox-only mode).
-   - If `server`/`token` configured but API unreachable → skip k8s (re-run scenario where k8s VMs are already off).
+3. **Kubernetes**: worker/CP VMIDs are resolved in priority order:
+   - **Config override**: if `workers` or `control_plane` are set in `[kubernetes]`, use them directly.
+   - **Tag-based**: if any running VM has a `styx:k8s-worker` or `styx:k8s-cp` Proxmox tag, use those.
+   - **API auto-discovery**: if `server` and `token` are set, call the Kubernetes API, extract node names and roles, match against Proxmox VM names. Workers = nodes without `control-plane` label; CP = nodes with it. If name matching yields zero matches → **abort with error**, ask user to configure `workers`/`control_plane` or add VM tags.
+   - If none of the above apply → skip k8s entirely (Proxmox-only mode).
+   - If API is configured but unreachable → skip k8s (re-run scenario where k8s VMs are already off).
 4. **Ceph**: `pveceph status >/dev/null 2>&1` — exit 0 means Ceph is configured. If `[ceph] enabled` is explicitly set in config, that takes precedence.
 5. **HA**: `ha-manager status` → auto-detect HA-managed resources (phase >= 2 only).
 
@@ -107,17 +108,22 @@ pve3 = 10.0.0.3
 host = pve1
 
 [kubernetes]
-# Override auto-discovered k8s node classification
-# Default kubeconfig: /root/.kube/config
-kubeconfig = /etc/styx/kubeconfig
+# Kubernetes API endpoint and credentials (required for API-based node discovery)
+server = https://10.0.0.10:6443
+token = /etc/styx/k8s-token          # path to a file containing the bearer token
+ca_cert = /etc/styx/k8s-ca.crt       # optional; skip TLS verify if omitted
+# Override auto-discovered k8s node classification (VMIDs)
 workers = 211, 212, 213, 214, 215
 control_plane = 201, 202, 203
 
 [ceph]
 # Override auto-detection (pveceph status)
 enabled = true
-# Override default flags
-flags = noout, norecover, norebalance, nobackfill, nodown, noup
+# Override default flags (default: noout, norecover, norebalance, nobackfill, nodown)
+# noup is NOT set by default: it prevents OSDs coming back up after restart,
+# which is a post-boot concern. Add it here only if you want to delay OSD start
+# on the next boot (e.g., to allow manual verification before OSDs come online).
+flags = noout, norecover, norebalance, nobackfill, nodown
 
 [timeouts]
 # All values in seconds
@@ -142,8 +148,7 @@ All sections are optional. SSH must be set up between all Proxmox hosts (root, k
 ### Prerequisites
 
 - **Proxmox cluster** with SSH between all hosts (root, key-based)
-- **socat** installed on all Proxmox hosts (standard on Proxmox)
-- **python3** on the orchestrator (standard on Proxmox; used for JSON parsing and the Kubernetes API client)
+- **python3** on **all** Proxmox hosts (standard on Proxmox 8+; used for orchestration and VM shutdown)
 - **ceph** CLI on the orchestrator or a Ceph node (if using Ceph)
 
 ### File Layout
@@ -175,64 +180,11 @@ Deployed on **all** Proxmox hosts. Shuts down a single VM using direct QMP socke
 styx-vm-shutdown <vmid> [timeout]    # default timeout: 120s
 ```
 
-**Implementation:**
-```bash
-#!/bin/bash
-# styx-vm-shutdown — Quorum-free VM shutdown via QMP + PID
-set -euo pipefail
+`bin/styx-vm-shutdown` is a thin shell wrapper around `python3 -m styx vm-shutdown`.
+The implementation lives in `styx/vm_shutdown.py`. It uses Python's `socket.AF_UNIX`
+directly — no `socat` dependency.
 
-VMID=${1:?Usage: styx-vm-shutdown <vmid> [timeout]}
-TIMEOUT=${2:-120}
-
-QMP="/var/run/qemu-server/${VMID}.qmp"
-PIDFILE="/var/run/qemu-server/${VMID}.pid"
-
-# Check if VM is running
-if [[ ! -f "$PIDFILE" ]] || ! kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
-  echo "VM ${VMID} is not running"
-  exit 0
-fi
-
-# Send ACPI power button via QMP (system_powerdown).
-# QMP requires qmp_capabilities before any command. Sleep gives QEMU time
-# to process capabilities before the command arrives.
-echo "VM ${VMID}: sending ACPI powerdown via QMP"
-{ printf '{"execute":"qmp_capabilities"}\n'
-  sleep 0.3
-  printf '{"execute":"system_powerdown"}\n'
-} | socat -t 3 - UNIX-CONNECT:"${QMP}" >/dev/null 2>&1 || true
-
-# Poll PID until stopped or timeout
-count=0
-while [[ $count -lt $TIMEOUT ]]; do
-  if ! kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; then
-    echo "VM ${VMID} stopped gracefully"
-    exit 0
-  fi
-  sleep 1
-  count=$((count + 1))
-done
-
-# Escalate: SIGTERM
-echo "VM ${VMID} timeout after ${TIMEOUT}s, sending SIGTERM"
-kill -15 "$(cat "$PIDFILE")" 2>/dev/null || true
-count=0
-while [[ $count -lt 10 ]]; do
-  if ! kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; then
-    echo "VM ${VMID} stopped after SIGTERM"
-    exit 0
-  fi
-  sleep 1
-  count=$((count + 1))
-done
-
-# Last resort: SIGKILL
-echo "VM ${VMID} still running, sending SIGKILL"
-kill -9 "$(cat "$PIDFILE")" 2>/dev/null || true
-echo "VM ${VMID} force-killed"
-```
-
-**Dependencies**: `socat` (standard on Proxmox).
+**Dependencies**: `python3` (standard on Proxmox 8+).
 
 **Checking if a VM is running** (quorum-free):
 ```bash
@@ -318,7 +270,7 @@ UNIFIED POLLING LOOP (after all shutdown commands issued):
 | `--phase 3` (default) | disable HA, cordon | drain + shutdown k8s VMs | shutdown non-k8s VMs | set flags | poll, **poweroff hosts** | poweroff orchestrator |
 
 Notes:
-- Phase 1 issues `styx-vm-shutdown` for k8s VMs (fire-and-forget). Does **not** wait for them to stop. HA is **not** disabled — only k8s VMs are affected, and k8s VMs are typically not HA-managed.
+- Phase 1 issues `styx-vm-shutdown` for k8s VMs (fire-and-forget). Does **not** wait for them to stop. HA is disabled only for k8s VMIDs (scoped, since phase 1 doesn't touch other VMs).
 - Phase 2 adds HA disable, non-k8s VMs, and the polling loop.
 - Phase 3 adds Ceph flags and host poweroff.
 - Cordon always runs regardless of phase (idempotent prerequisite).
@@ -397,7 +349,7 @@ All significant actions are logged with timestamps to both stdout and `/var/log/
 - Errors and fallbacks (QGA unavailable, SSH timeout, drain timeout)
 - Phase transitions and completion
 
-Implementation: `exec > >(tee -a /var/log/styx.log)` at script start with a timestamped prefix on each line. Each run starts with a separator header for readability in the log file.
+Implementation: `styx/policy.py` provides a `log()` function that writes `[ISO-timestamp] msg` to both stdout and the log file in append mode. The log file is opened once at startup via `setup_log_file(path)`. Path defaults to `/var/log/styx.log`; override with the `LOG_FILE` environment variable.
 
 The primary use case is post-mortem analysis after a UPS-triggered shutdown. When called interactively, stdout provides the same output.
 
@@ -409,9 +361,11 @@ After power is restored:
 
 2. **Unset Ceph OSD flags** (if Ceph is enabled):
    ```bash
-   for flag in noout norecover norebalance nobackfill nodown noup; do
+   for flag in noout norecover norebalance nobackfill nodown; do
      ceph osd unset "$flag"
    done
+   # Also unset noup if you set it manually at shutdown time:
+   # ceph osd unset noup
    ```
 
 3. **Verify Ceph health**:
@@ -448,177 +402,136 @@ After power is restored:
 
 The scripts are structured for testability by separating **decision logic** (pure functions, testable without infrastructure) from **external actions** (SSH, QMP, kubectl — thin wrappers that are trivially mockable). This gives meaningful test coverage without needing real Proxmox, Kubernetes, or Ceph clusters.
 
-Tests use [bats](https://github.com/bats-core/bats-core) (Bash Automated Testing System).
+Tests are written in Python `unittest` — no external test frameworks required.
 
 ### Code Structure
 
 ```
 styx/
 ├── bin/
-│   ├── styx                          # main orchestrator (sources lib/)
-│   └── styx-vm-shutdown              # VM shutdown helper
-├── lib/
-│   ├── config.sh                     # INI parser (optional config overrides)
-│   ├── discover.sh                   # auto-discovery (hosts, VMs, k8s, ceph)
-│   ├── classify.sh                   # VMID classification, node-to-VM matching
-│   ├── decide.sh                     # decision logic (should_poweroff, etc.)
-│   └── wrappers.sh                   # thin wrappers around external commands
+│   ├── styx                          # thin wrapper: python3 -m styx orchestrate
+│   └── styx-vm-shutdown              # thin wrapper: python3 -m styx vm-shutdown
+├── styx/
+│   ├── __main__.py                   # CLI dispatch (orchestrate | vm-shutdown)
+│   ├── policy.py                     # Policy class (dry-run, on_warning, log)
+│   ├── config.py                     # StyxConfig dataclass + INI parser
+│   ├── discover.py                   # pure parsing functions + ClusterTopology
+│   ├── classify.py                   # VMID classification (k8s-worker/cp/other)
+│   ├── decide.py                     # phase predicates (should_disable_ha, etc.)
+│   ├── k8s.py                        # K8sClient (cordon, drain, list nodes, etc.)
+│   ├── vm_shutdown.py                # QMP + PID escalation (no socat)
+│   ├── wrappers.py                   # Operations class (all external calls)
+│   └── orchestrate.py                # main shutdown sequence
 ├── test/
 │   ├── unit/
-│   │   ├── config.bats               # INI parsing
-│   │   ├── discover.bats             # pvesh/kubectl JSON parsing, name matching
-│   │   ├── classify.bats             # VMID classification
-│   │   ├── decide.bats               # host poweroff, shutdown decisions
-│   │   ├── phase_control.bats        # --phase and --dry-run logic
-│   │   └── vm_shutdown.bats          # styx-vm-shutdown PID/signal logic
-│   ├── integration/
-│   │   ├── fake_env.sh               # sets up fake PID files, mock wrappers
-│   │   ├── full_sequence.bats        # end-to-end with fake env
-│   │   └── idempotency.bats          # re-run scenarios
-│   └── test_helper/
-│       └── bats-support/             # bats assertion libs (git submodule)
+│   │   ├── test_config.py            # INI parsing
+│   │   ├── test_discover.py          # pvesh/kubectl JSON parsing, name matching
+│   │   ├── test_classify.py          # VMID classification
+│   │   ├── test_decide.py            # phase predicates
+│   │   └── test_k8s.py               # K8sClient (cordon, drain, mirror pods, etc.)
+│   └── integration/
+│       ├── helpers.py                # FakeOperations + fake VM (sleep + PID files)
+│       └── test_full_sequence.py     # end-to-end with injected fakes
 ├── .github/workflows/
-│   └── test.yml                      # CI: install bats, run tests
-├── styx.conf.example                 # Example config (all sections optional)
+│   └── test.yml                      # CI: python3 -m unittest discover
+├── docs/
+│   └── design.md
 └── README.md
 ```
 
 ### Layer Separation
 
-**Layer 1 — Pure functions** (`lib/discover.sh`, `lib/classify.sh`, `lib/decide.sh`):
+**Layer 1 — Pure functions** (`styx/discover.py`, `styx/classify.py`, `styx/decide.py`):
 
 No side effects. Take data in, return decisions. Directly testable.
 
-```bash
-# lib/config.sh
-parse_config()              # INI file -> shell variables (all optional overrides)
+```python
+# styx/config.py
+load_config(path) -> StyxConfig       # INI file -> dataclass (all sections optional)
 
-# lib/discover.sh
-parse_cluster_status()      # pvesh cluster/status JSON -> host names, IPs, local flag
-parse_cluster_resources()   # pvesh cluster/resources JSON -> VMID-to-host, VMID-to-name (filter type=="qemu")
-parse_kubectl_nodes()       # kubectl get nodes JSON -> node names + roles
-match_nodes_to_vms()        # node names + VM names -> VMID classification (worker/CP)
+# styx/discover.py
+parse_cluster_status(data)            # pvesh cluster/status JSON -> (host_ips, orchestrator)
+parse_cluster_resources(data)         # pvesh cluster/resources JSON -> (vm_host, vm_name, vm_tags)
+classify_by_tags(vm_tags)             # Proxmox VM tags -> (workers, cp) VMID lists
+match_nodes_to_vms(vm_name, roles)    # k8s node names + VM names -> (workers, cp); raises on no match
 
-# lib/classify.sh
-classify_vmid()             # vmid + worker/CP sets -> "k8s-worker", "k8s-cp", "other"
-get_k8s_workers()           # from vmid list -> worker VMIDs
-get_k8s_cp()                # from vmid list -> CP VMIDs
-get_other_vms()             # from vmid list -> non-k8s VMIDs
+# styx/classify.py
+classify_vmid(vmid, workers, cp)      # -> "k8s-worker" | "k8s-cp" | "other"
+other_vmids(all_vmids, workers, cp)   # -> non-k8s VMID list
 
-# lib/decide.sh
-should_poweroff_host()      # host, its VMIDs, running set -> yes/no
-should_disable_ha()         # phase -> yes/no
-should_run_polling()        # phase -> yes/no
-should_poweroff_hosts()     # phase -> yes/no
+# styx/decide.py
+should_disable_ha(phase)              # -> bool
+should_run_polling(phase)             # -> bool
+should_poweroff_hosts(phase)          # -> bool
+should_set_ceph_flags(phase)          # -> bool
 ```
 
-**Layer 2 — Thin wrappers** (`lib/wrappers.sh`):
+**Layer 2 — Thin wrappers** (`styx/wrappers.py`):
 
-One-line functions calling external commands. Overridden with fakes in tests.
+`Operations` class; injected as a fake in tests.
 
-```bash
-run_on_host()          # ssh -o ConnectTimeout=5 root@$host "$cmd" (or local if self)
-get_running_vms()      # scan PID files on a host
-drain_node()           # lib/k8s.py drain <node> --timeout=...
-shutdown_vm()          # styx-vm-shutdown (local or via SSH)
-cordon_node()          # lib/k8s.py cordon <node>
-is_api_reachable()     # lib/k8s.py reachable
-get_k8s_nodes()        # lib/k8s.py get-nodes → "name role" pairs
-set_ceph_flags()       # ceph osd set <flags>
-disable_ha()           # ha-manager status + set --state disabled
-poweroff_host()        # ssh root@$host poweroff
+```python
+ops.run_on_host(host, cmd)                     # SSH or local bash
+ops.get_running_vmids(host)                    # scan PID files on a host
+ops.shutdown_vm(host, vmid, timeout)           # python3 -m styx vm-shutdown (local or SSH)
+ops.cordon_node(node)                          # kubectl cordon via K8sClient
+ops.drain_node(node, timeout) -> bool          # kubectl drain via K8sClient
+ops.list_volume_attachments_for_node(node)     # CSI VolumeAttachment check post-drain
+ops.get_ha_started_sids()                      # ha-manager status -> started SIDs
+ops.disable_ha_sid(sid)                        # ha-manager set --state disabled
+ops.wait_ha_disabled(sid, timeout) -> bool     # poll until disabled or timeout
+ops.set_ceph_flags(flags)                      # ceph osd set <flag> for each flag
+ops.poweroff_host(host)                        # ssh root@<ip> poweroff
+ops.poweroff_self()                            # poweroff (orchestrator self)
 ```
 
-**Layer 3 — Orchestration** (`bin/styx`):
+**Layer 3 — Orchestration** (`styx/orchestrate.py`):
 
-Sources `lib/` and wires everything together. Tested via integration tests with fake wrappers.
+`main()` accepts `_discover_fn` and `_ops_factory` as keyword-only parameters for test injection.
 
 ### Unit Tests
 
 Test layer-1 functions with synthetic data — no mocking needed.
 
-```bash
-# test/unit/discover.bats
-@test "parse_cluster_status extracts hosts and IPs" {
-  source lib/discover.sh
-  local json='[
-    {"type":"cluster","name":"mycluster"},
-    {"type":"node","name":"pve1","ip":"10.0.0.1","local":1,"online":1},
-    {"type":"node","name":"pve2","ip":"10.0.0.2","local":0,"online":1}
-  ]'
-  parse_cluster_status "$json"
-  [[ "${HOST_IPS[pve1]}" == "10.0.0.1" ]]
-  [[ "${HOST_IPS[pve2]}" == "10.0.0.2" ]]
-  [[ "$ORCHESTRATOR" == "pve1" ]]
-}
+```python
+# test/unit/test_discover.py
+def test_parse_cluster_status_extracts_hosts_and_ips(self):
+    data = [
+        {'type': 'cluster', 'name': 'mycluster'},
+        {'type': 'node', 'name': 'pve1', 'ip': '10.0.0.1', 'local': 1},
+        {'type': 'node', 'name': 'pve2', 'ip': '10.0.0.2', 'local': 0},
+    ]
+    host_ips, orchestrator = parse_cluster_status(data)
+    self.assertEqual(host_ips['pve1'], '10.0.0.1')
+    self.assertEqual(orchestrator, 'pve1')
 
-@test "match_nodes_to_vms classifies by role" {
-  source lib/discover.sh
-  # Simulate: kubectl nodes with names matching VM names
-  local -A vm_names=([201]="cp1" [211]="worker1")
-  local -A node_roles=([cp1]="control-plane" [worker1]="")
-  match_nodes_to_vms vm_names node_roles
-  [[ "${K8S_CP[*]}" == *"201"* ]]
-  [[ "${K8S_WORKERS[*]}" == *"211"* ]]
-}
+def test_match_nodes_to_vms_raises_on_no_match(self):
+    with self.assertRaises(ValueError):
+        match_nodes_to_vms({'201': 'my-vm-1'}, [('cp1', 'control-plane')])
 
-@test "match_nodes_to_vms fails when no names match" {
-  source lib/discover.sh
-  local -A vm_names=([201]="my-vm-1")
-  local -A node_roles=([cp1]="control-plane")
-  run match_nodes_to_vms vm_names node_roles
-  [[ "$status" -ne 0 ]]
-}
-
-# test/unit/classify.bats
-@test "VMID in workers list classified as k8s-worker" {
-  source lib/classify.sh
-  STYX_WORKERS="211 212 213"
-  run classify_vmid 211
-  [[ "$output" == "k8s-worker" ]]
-}
-
-# test/unit/decide.bats
-@test "host with all VMs stopped should be powered off" {
-  source lib/decide.sh
-  local -A host_vms=([pve3]="103 104")
-  local running=()
-  run should_poweroff_host "pve3" host_vms running
-  [[ "$output" == "yes" ]]
-}
-
-@test "phase 1 skips HA disable" {
-  source lib/decide.sh
-  run should_disable_ha 1
-  [[ "$output" == "no" ]]
-}
+# test/unit/test_k8s.py
+def test_mirror_pod_not_drainable(self):
+    pod = _pod('kube-apiserver', mirror=True)
+    self.assertFalse(K8sClient._drainable(pod))
 ```
 
 ### Integration Tests
 
-Full orchestration with fake wrappers — no real SSH, QMP, or kubectl. VMs simulated as backgrounded `sleep` processes with PID files.
+Full orchestration with `FakeOperations` — no real SSH, QMP, or kubectl. VMs simulated as `sleep` processes with PID files in a temp directory. `main()` receives injected `_discover_fn` and `_ops_factory`.
 
-```bash
-@test "phase 3: all VMs stop, hosts powered off, orchestrator last" {
-  run bin/styx --phase 3 --config "$FAKE_CONFIG"
-  local last_line=$(tail -1 "$FAKE_ROOT/poweroff.log")
-  [[ "$last_line" == "POWEROFF pve1" ]]
-}
+```python
+# test/integration/test_full_sequence.py
+def test_phase3_orchestrator_powers_off_last(self):
+    main(['--phase', '3', '--config', '/dev/null'],
+         _discover_fn=self._fake_discover,
+         _ops_factory=self._fake_ops)
+    self.assertEqual(self.ops.poweroff_log[-1], 'POWEROFF_SELF')
 
-@test "dry-run: no VMs stopped, no hosts powered off" {
-  run bin/styx --dry-run --phase 3 --config "$FAKE_CONFIG"
-  for pid in "${FAKE_PIDS[@]}"; do
-    kill -0 "$pid" 2>/dev/null
-  done
-}
-
-@test "phase 1 then phase 3: full sequence completes" {
-  bin/styx --phase 1 --config "$FAKE_CONFIG"
-  is_api_reachable() { return 1; }
-  export -f is_api_reachable
-  run bin/styx --phase 3 --config "$FAKE_CONFIG"
-  [[ "$status" -eq 0 ]]
-}
+def test_dry_run_does_not_stop_vms(self):
+    main(['--dry-run', '--phase', '3', '--config', '/dev/null'],
+         _discover_fn=self._fake_discover,
+         _ops_factory=self._fake_ops)
+    self.assertEqual(self.ops.shutdown_log, [])
 ```
 
 ### CI
@@ -631,14 +544,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install bats
-        run: |
-          git clone https://github.com/bats-core/bats-core.git
-          cd bats-core && sudo ./install.sh /usr/local
+      - name: Install dependencies
+        run: sudo apt-get install -y python3
       - name: Run unit tests
-        run: bats test/unit/
+        run: python3 -m unittest discover -s test/unit -p 'test_*.py' -v
       - name: Run integration tests
-        run: bats test/integration/
+        run: python3 -m unittest discover -s test -p 'test_*.py' -v
 ```
 
 ### What's NOT Tested (requires real infrastructure)
@@ -668,16 +579,9 @@ QMP-only is simpler (one socket, one protocol, one code path) and more reliable 
 
 QMP requires `qmp_capabilities` before any command. The greeting is sent by QEMU immediately on connect and sits in the socket send buffer — it does not need to be read before sending commands.
 
-**Pipelining works in practice:** QEMU buffers socket input and processes commands sequentially from the buffer. The `printf | socat` one-shot pattern is widely used on Proxmox forums. However, Proxmox itself uses strict request-response (via `IO::Multiplex`) because its QMP client is general-purpose.
+**Pipelining works in practice:** QEMU buffers socket input and processes commands sequentially from the buffer. Proxmox itself uses strict request-response (via `IO::Multiplex`) because its QMP client is general-purpose. The implementation uses Python `socket.AF_UNIX` with explicit `recv()` between each send, which is the correct request-response pattern.
 
-**For safety on loaded systems**, a short `sleep 0.3` between `qmp_capabilities` and the actual command ensures QEMU has processed capabilities before the command arrives:
-
-```bash
-{ printf '{"execute":"qmp_capabilities"}\n'; sleep 0.3; printf '{"execute":"system_powerdown"}\n'; } | \
-  socat -t 3 - UNIX-CONNECT:"${QMP}"
-```
-
-Source: Proxmox `PVE/QMPClient.pm`, QEMU QMP specification, Proxmox forum patterns.
+Source: Proxmox `PVE/QMPClient.pm`, QEMU QMP specification.
 
 ### Resolved: kubectl drain flags
 
