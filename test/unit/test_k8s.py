@@ -134,6 +134,44 @@ class TestCordon(unittest.TestCase):
         self.assertIn('strategic-merge-patch', m.call_args[0][0].get_header('Content-type'))
 
 
+# ── evict ─────────────────────────────────────────────────────────────────────
+
+class TestEvict(unittest.TestCase):
+
+    def test_returns_evicted_on_success(self):
+        with patch('urllib.request.urlopen', return_value=_resp({})):
+            self.assertEqual(_client().evict('app', 'default'), 'evicted')
+
+    def test_returns_gone_on_404(self):
+        err = urllib.error.HTTPError(None, 404, 'Not Found', {}, None)
+        with patch('urllib.request.urlopen', side_effect=err):
+            self.assertEqual(_client().evict('app', 'default'), 'gone')
+
+    def test_returns_retry_on_422(self):
+        err = urllib.error.HTTPError(None, 422, 'Unprocessable Entity', {}, None)
+        with patch('urllib.request.urlopen', side_effect=err):
+            self.assertEqual(_client().evict('app', 'default'), 'retry')
+
+    def test_returns_retry_on_429(self):
+        err = urllib.error.HTTPError(None, 429, 'Too Many Requests', {}, None)
+        with patch('urllib.request.urlopen', side_effect=err):
+            self.assertEqual(_client().evict('app', 'default'), 'retry')
+
+    def test_reraises_on_other_http_errors(self):
+        err = urllib.error.HTTPError(None, 500, 'Internal Server Error', {}, None)
+        with patch('urllib.request.urlopen', side_effect=err):
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                _client().evict('app', 'default')
+        self.assertEqual(ctx.exception.code, 500)
+
+    def test_post_sent_to_correct_path(self):
+        with patch('urllib.request.urlopen', return_value=_resp({})) as m:
+            _client().evict('my-pod', 'my-ns')
+        req = m.call_args[0][0]
+        self.assertEqual(req.method, 'POST')
+        self.assertIn('/api/v1/namespaces/my-ns/pods/my-pod/eviction', req.full_url)
+
+
 # ── _drainable ────────────────────────────────────────────────────────────────
 
 class TestDrainable(unittest.TestCase):
