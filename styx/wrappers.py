@@ -14,6 +14,21 @@ from styx.policy import log
 _HA_TRANSITION_TIMEOUT = 30
 
 
+def _parse_ha_status(output):
+    """Return SIDs in 'started' state from ha-manager status output."""
+    return [
+        parts[0]
+        for line in output.splitlines()
+        for parts in [line.split()]
+        if len(parts) >= 2 and parts[1] == 'started'
+    ]
+
+
+def _parse_running_vmids(output):
+    """Return non-empty stripped lines from get_running_vmids shell output."""
+    return [line.strip() for line in output.splitlines() if line.strip()]
+
+
 class Operations:
     def __init__(self, host_ips, orchestrator, k8s=None):
         self._host_ips    = host_ips
@@ -44,7 +59,7 @@ class Operations:
                 '  kill -0 "$pid" 2>/dev/null && basename "$f" .pid; '
                 'done'
             ))
-            return [line.strip() for line in out.splitlines() if line.strip()]
+            return _parse_running_vmids(out)
         except Exception:
             return []
 
@@ -86,12 +101,7 @@ class Operations:
                 ['ha-manager', 'status'],
                 capture_output=True, text=True, timeout=10,
             )
-            return [
-                parts[0]
-                for line in r.stdout.splitlines()
-                for parts in [line.split()]
-                if len(parts) >= 2 and parts[1] == 'started'
-            ]
+            return _parse_ha_status(r.stdout)
         except Exception:
             return []
 
