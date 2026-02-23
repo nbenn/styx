@@ -103,11 +103,25 @@ def shutdown(vmid, timeout=120):
     return 1
 
 
+def check(vmid):
+    """Report whether a VM is running without touching it. Used in dry-run mode."""
+    pid = _read_pid(vmid)
+    if pid is None or not _alive(pid):
+        print(f'VM {vmid} is not running')
+    else:
+        print(f'VM {vmid} is running (pid {pid}) — would shut down')
+    return 0
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description='Graceful VM shutdown')
     p.add_argument('vmid')
     p.add_argument('timeout', type=int, nargs='?', default=120)
+    p.add_argument('--dry-run', action='store_true',
+                   help='Report VM status without shutting down')
     args = p.parse_args(argv)
+    if args.dry_run:
+        sys.exit(check(args.vmid))
     sys.exit(shutdown(args.vmid, args.timeout))
 
 

@@ -12,7 +12,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from styx.vm_shutdown import _read_pid, _alive, _poll_dead, _qmp_powerdown, shutdown
+import io
+from contextlib import redirect_stdout
+
+from styx.vm_shutdown import _read_pid, _alive, _poll_dead, _qmp_powerdown, shutdown, check
 
 _VMID = '101'
 
@@ -232,6 +235,38 @@ class TestShutdown(_Base):
              mock.patch('styx.vm_shutdown._qmp_powerdown', return_value=False), \
              mock.patch('os.kill', side_effect=ProcessLookupError):
             self.assertEqual(shutdown(_VMID, timeout=0), 0)
+
+
+# ── TestCheck ─────────────────────────────────────────────────────────────────
+
+class TestCheck(_Base):
+
+    def _capture(self, vmid=_VMID):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = check(vmid)
+        return rc, buf.getvalue()
+
+    def test_no_pid_file_reports_not_running(self):
+        rc, out = self._capture()
+        self.assertEqual(rc, 0)
+        self.assertIn('not running', out)
+
+    def test_running_process_reports_pid_and_would_shut_down(self):
+        proc = self._spawn()
+        rc, out = self._capture()
+        self.assertEqual(rc, 0)
+        self.assertIn('running', out)
+        self.assertIn(str(proc.pid), out)
+        self.assertIn('would shut down', out)
+
+    def test_dead_process_reports_not_running(self):
+        proc = subprocess.Popen(['true'], stdout=subprocess.DEVNULL)
+        proc.wait()
+        self._pid_path().write_text(str(proc.pid))
+        rc, out = self._capture()
+        self.assertEqual(rc, 0)
+        self.assertIn('not running', out)
 
 
 if __name__ == '__main__':

@@ -15,7 +15,9 @@ from styx.policy import log
 _HA_TRANSITION_TIMEOUT = 30
 
 
-_REMOTE_PYZ = '/tmp/styx-deploy.pyz'
+_REMOTE_PYZ  = '/tmp/styx-deploy.pyz'
+_VM_LOG      = '/tmp/styx-vm-{vmid}.log'
+_VM_LOG_GLOB = '/tmp/styx-vm-*.log'
 
 
 def _local_pyz():
@@ -102,17 +104,29 @@ class Operations:
                 stdin=f, check=True, timeout=60,
             )
 
-    def shutdown_vm(self, host, vmid, timeout):
-        # Peers get the pre-deployed local copy; orchestrator uses _styx_cmd()
-        # (which points at shared storage, safe since it runs first and imports
-        # everything before CephFS can lose quorum).
+    def _vm_prefix(self, host):
+        """Command prefix for running styx on host."""
         if _local_pyz() and host != self._orchestrator:
-            prefix = f'python3 {_REMOTE_PYZ}'
-        else:
-            prefix = _styx_cmd()
-        cmd = f'{prefix} vm-shutdown {vmid} {timeout}'
+            return f'python3 {_REMOTE_PYZ}'
+        return _styx_cmd()
+
+    def check_vm(self, host, vmid):
+        """Synchronously check VM status and log result. Used in dry-run mode."""
+        cmd = f'{self._vm_prefix(host)} vm-shutdown {vmid} --dry-run'
         try:
-            self.run_on_host(host, f'nohup {cmd} </dev/null >/dev/null 2>&1 &')
+            out = self.run_on_host(host, cmd)
+            if out.strip():
+                log(out.rstrip())
+        except Exception as e:
+            log(f'WARNING: check_vm {vmid} on {host}: {e}')
+
+    def shutdown_vm(self, host, vmid, timeout):
+        # Output goes to a per-VM log file on the host; collected by
+        # poweroff_host() before the host is powered off.
+        log_file = _VM_LOG.format(vmid=vmid)
+        cmd = f'{self._vm_prefix(host)} vm-shutdown {vmid} {timeout}'
+        try:
+            self.run_on_host(host, f'nohup {cmd} </dev/null >{log_file} 2>&1 &')
         except Exception as e:
             log(f'WARNING: shutdown_vm {vmid} on {host}: {e}')
 
@@ -185,11 +199,15 @@ class Operations:
     def poweroff_host(self, host):
         ip = self._host_ips[host]
         try:
-            subprocess.run(
+            # Collect vm-shutdown logs before the host disappears, then power off.
+            r = subprocess.run(
                 ['ssh', '-o', 'ConnectTimeout=5', '-o', 'BatchMode=yes',
-                 f'root@{ip}', 'poweroff'],
-                timeout=10,
+                 f'root@{ip}',
+                 f'cat {_VM_LOG_GLOB} 2>/dev/null; poweroff'],
+                capture_output=True, text=True, timeout=30,
             )
+            if r.stdout.strip():
+                log(f'vm-shutdown log from {host}:\n{r.stdout.rstrip()}')
         except Exception as e:
             log(f'WARNING: poweroff {host}: {e}')
 

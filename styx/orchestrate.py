@@ -186,9 +186,10 @@ def _disable_ha(topo, ops, policy, scope):
 def _drain_and_shutdown(vmid, node, host, config, ops, policy):
     log(f'Draining: {node} (VM {vmid} on {host})')
     ok = policy.execute(f'drain {node}', ops.drain_node, node, config.timeout_drain)
-    if ok is None:        # dry-run
-        pass
-    elif not ok:
+    if ok is None:        # dry-run — drain logged but skipped; check live VM status
+        ops.check_vm(host, vmid)
+        return
+    if not ok:
         policy.on_warning(f'drain timed out or failed for {node}')
     else:
         log(f'Drained: {node}')
@@ -197,12 +198,15 @@ def _drain_and_shutdown(vmid, node, host, config, ops, policy):
             policy.on_warning(
                 f'stale VolumeAttachments after drain of {node}: {", ".join(stale)}'
             )
-    policy.execute(f'shutdown_vm {vmid}', ops.shutdown_vm, host, vmid, config.timeout_vm)
+    ops.shutdown_vm(host, vmid, config.timeout_vm)
 
 
 def _shutdown_only(vmid, host, config, ops, policy):
     log(f'Shutting down VM: {vmid} on {host}')
-    policy.execute(f'shutdown_vm {vmid}', ops.shutdown_vm, host, vmid, config.timeout_vm)
+    if policy.dry_run:
+        ops.check_vm(host, vmid)
+    else:
+        ops.shutdown_vm(host, vmid, config.timeout_vm)
 
 
 # ── tracks ────────────────────────────────────────────────────────────────────
@@ -351,15 +355,16 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None):
                 policy.on_warning(f'Failed to create k8s client: {e}')
         ops = Operations(topo.host_ips, topo.orchestrator, k8s)
 
-    # Deploy executable to peer hosts so vm-shutdown doesn't depend on CephFS
+    # Deploy executable to peer hosts so vm-shutdown doesn't depend on CephFS.
+    # Always runs (including dry-run) — copying a file is non-destructive, and
+    # dry-run needs the executable on peers to run vm-shutdown --dry-run.
     if _local_pyz():
         log('--- Deploying styx to peer hosts ---')
         for host in topo.host_ips:
             if host != topo.orchestrator:
                 try:
-                    policy.execute(f'push_executable {host}', ops.push_executable, host)
-                    if not policy.dry_run:
-                        log(f'Deployed styx to {host}')
+                    ops.push_executable(host)
+                    log(f'Deployed styx to {host}')
                 except Exception as e:
                     policy.on_warning(f'Failed to deploy styx to {host}: {e}')
 

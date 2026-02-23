@@ -6,7 +6,7 @@ from unittest.mock import mock_open, patch
 
 from styx.wrappers import (
     _parse_ha_status, _parse_running_vmids, _styx_cmd, _local_pyz,
-    _REMOTE_PYZ, Operations,
+    _REMOTE_PYZ, _VM_LOG, Operations,
 )
 
 
@@ -148,9 +148,10 @@ class TestOperationsShutdownVmCmd(unittest.TestCase):
         with patch.object(sys, 'argv', ['/mnt/pve/shared/snippets/styx.pyz']):
             with patch.object(ops, 'run_on_host') as mock_run:
                 ops.shutdown_vm('pve1', '101', 120)
+        log_file = _VM_LOG.format(vmid='101')
         mock_run.assert_called_once_with(
             'pve1',
-            'nohup python3 /mnt/pve/shared/snippets/styx.pyz vm-shutdown 101 120 </dev/null >/dev/null 2>&1 &',
+            f'nohup python3 /mnt/pve/shared/snippets/styx.pyz vm-shutdown 101 120 </dev/null >{log_file} 2>&1 &',
         )
 
     def test_shutdown_vm_peer_uses_remote_pyz(self):
@@ -158,9 +159,10 @@ class TestOperationsShutdownVmCmd(unittest.TestCase):
         with patch.object(sys, 'argv', ['/mnt/pve/shared/snippets/styx.pyz']):
             with patch.object(ops, 'run_on_host') as mock_run:
                 ops.shutdown_vm('pve2', '102', 120)
+        log_file = _VM_LOG.format(vmid='102')
         mock_run.assert_called_once_with(
             'pve2',
-            f'nohup python3 {_REMOTE_PYZ} vm-shutdown 102 120 </dev/null >/dev/null 2>&1 &',
+            f'nohup python3 {_REMOTE_PYZ} vm-shutdown 102 120 </dev/null >{log_file} 2>&1 &',
         )
 
     def test_shutdown_vm_uses_module_from_source(self):
@@ -168,9 +170,45 @@ class TestOperationsShutdownVmCmd(unittest.TestCase):
         with patch.object(sys, 'argv', ['styx/__main__.py']):
             with patch.object(ops, 'run_on_host') as mock_run:
                 ops.shutdown_vm('pve2', '102', 120)
+        log_file = _VM_LOG.format(vmid='102')
         mock_run.assert_called_once_with(
             'pve2',
-            'nohup python3 -m styx vm-shutdown 102 120 </dev/null >/dev/null 2>&1 &',
+            f'nohup python3 -m styx vm-shutdown 102 120 </dev/null >{log_file} 2>&1 &',
+        )
+
+
+# ── Operations.check_vm ───────────────────────────────────────────────────────
+
+class TestOperationsCheckVm(unittest.TestCase):
+
+    def test_check_vm_orchestrator_uses_local_pyz(self):
+        ops = Operations({'pve1': '10.0.0.1'}, 'pve1')
+        with patch.object(sys, 'argv', ['/mnt/pve/shared/styx.pyz']):
+            with patch.object(ops, 'run_on_host', return_value='VM 101 is running (pid 1234) — would shut down\n') as mock_run:
+                ops.check_vm('pve1', '101')
+        mock_run.assert_called_once_with(
+            'pve1',
+            'python3 /mnt/pve/shared/styx.pyz vm-shutdown 101 --dry-run',
+        )
+
+    def test_check_vm_peer_uses_remote_pyz(self):
+        ops = Operations({'pve1': '10.0.0.1', 'pve2': '10.0.0.2'}, 'pve1')
+        with patch.object(sys, 'argv', ['/mnt/pve/shared/styx.pyz']):
+            with patch.object(ops, 'run_on_host', return_value='VM 211 is not running\n') as mock_run:
+                ops.check_vm('pve2', '211')
+        mock_run.assert_called_once_with(
+            'pve2',
+            f'python3 {_REMOTE_PYZ} vm-shutdown 211 --dry-run',
+        )
+
+    def test_check_vm_dev_mode_uses_module(self):
+        ops = Operations({'pve1': '10.0.0.1', 'pve2': '10.0.0.2'}, 'pve1')
+        with patch.object(sys, 'argv', ['styx/__main__.py']):
+            with patch.object(ops, 'run_on_host', return_value='VM 211 is not running\n') as mock_run:
+                ops.check_vm('pve2', '211')
+        mock_run.assert_called_once_with(
+            'pve2',
+            'python3 -m styx vm-shutdown 211 --dry-run',
         )
 
 
