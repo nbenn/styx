@@ -19,7 +19,8 @@
           "kubernetes.io/hostname": "k8s-cp-1",
           "kubernetes.io/os": "linux",
           "node-role.kubernetes.io/control-plane": "",
-          "node-role.kubernetes.io/master": ""
+          "node-role.kubernetes.io/master": "",
+          "node-role.kubernetes.io/etcd": ""
         },
         "annotations": {
           "kubeadm.alpha.kubernetes.io/cri-socket": "unix:///var/run/containerd/containerd.sock",
@@ -29,7 +30,9 @@
       },
       "spec": {
         "podCIDR": "10.244.0.0/24",
-        "podCIDRs": ["10.244.0.0/24"],
+        "podCIDRs": [
+          "10.244.0.0/24"
+        ],
         "taints": [
           {
             "effect": "NoSchedule",
@@ -39,7 +42,12 @@
       },
       "status": {
         "conditions": [
-          {"lastHeartbeatTime": "2024-06-01T12:00:00Z", "reason": "KubeletReady", "status": "True", "type": "Ready"}
+          {
+            "lastHeartbeatTime": "2024-06-01T12:00:00Z",
+            "reason": "KubeletReady",
+            "status": "True",
+            "type": "Ready"
+          }
         ]
       }
     },
@@ -55,8 +63,7 @@
           "beta.kubernetes.io/os": "linux",
           "kubernetes.io/arch": "amd64",
           "kubernetes.io/hostname": "k8s-worker-1",
-          "kubernetes.io/os": "linux",
-          "node-role.kubernetes.io/worker": ""
+          "kubernetes.io/os": "linux"
         },
         "annotations": {
           "kubeadm.alpha.kubernetes.io/cri-socket": "unix:///var/run/containerd/containerd.sock",
@@ -66,11 +73,18 @@
       },
       "spec": {
         "podCIDR": "10.244.1.0/24",
-        "podCIDRs": ["10.244.1.0/24"]
+        "podCIDRs": [
+          "10.244.1.0/24"
+        ]
       },
       "status": {
         "conditions": [
-          {"lastHeartbeatTime": "2024-06-01T12:00:00Z", "reason": "KubeletReady", "status": "True", "type": "Ready"}
+          {
+            "lastHeartbeatTime": "2024-06-01T12:00:00Z",
+            "reason": "KubeletReady",
+            "status": "True",
+            "type": "Ready"
+          }
         ]
       }
     },
@@ -86,8 +100,7 @@
           "beta.kubernetes.io/os": "linux",
           "kubernetes.io/arch": "amd64",
           "kubernetes.io/hostname": "k8s-worker-2",
-          "kubernetes.io/os": "linux",
-          "node-role.kubernetes.io/worker": ""
+          "kubernetes.io/os": "linux"
         },
         "annotations": {
           "volumes.kubernetes.io/controller-managed-attach-detach": "true"
@@ -95,11 +108,18 @@
       },
       "spec": {
         "podCIDR": "10.244.2.0/24",
-        "podCIDRs": ["10.244.2.0/24"]
+        "podCIDRs": [
+          "10.244.2.0/24"
+        ]
       },
       "status": {
         "conditions": [
-          {"lastHeartbeatTime": "2024-06-01T12:00:00Z", "reason": "KubeletReady", "status": "True", "type": "Ready"}
+          {
+            "lastHeartbeatTime": "2024-06-01T12:00:00Z",
+            "reason": "KubeletReady",
+            "status": "True",
+            "type": "Ready"
+          }
         ]
       }
     },
@@ -115,8 +135,7 @@
           "beta.kubernetes.io/os": "linux",
           "kubernetes.io/arch": "amd64",
           "kubernetes.io/hostname": "k8s-worker-3",
-          "kubernetes.io/os": "linux",
-          "node-role.kubernetes.io/worker": ""
+          "kubernetes.io/os": "linux"
         },
         "annotations": {
           "volumes.kubernetes.io/controller-managed-attach-detach": "true"
@@ -124,11 +143,18 @@
       },
       "spec": {
         "podCIDR": "10.244.3.0/24",
-        "podCIDRs": ["10.244.3.0/24"]
+        "podCIDRs": [
+          "10.244.3.0/24"
+        ]
       },
       "status": {
         "conditions": [
-          {"lastHeartbeatTime": "2024-06-01T12:00:00Z", "reason": "KubeletReady", "status": "True", "type": "Ready"}
+          {
+            "lastHeartbeatTime": "2024-06-01T12:00:00Z",
+            "reason": "KubeletReady",
+            "status": "True",
+            "type": "Ready"
+          }
         ]
       }
     }

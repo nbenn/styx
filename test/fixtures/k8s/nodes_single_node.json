@@ -17,7 +17,8 @@
           "kubernetes.io/hostname": "k8s-single",
           "kubernetes.io/os": "linux",
           "node-role.kubernetes.io/control-plane": "",
-          "node-role.kubernetes.io/master": ""
+          "node-role.kubernetes.io/master": "",
+          "node-role.kubernetes.io/etcd": ""
         },
         "annotations": {
           "volumes.kubernetes.io/controller-managed-attach-detach": "true"
@@ -28,7 +29,10 @@
       },
       "status": {
         "conditions": [
-          {"status": "True", "type": "Ready"}
+          {
+            "status": "True",
+            "type": "Ready"
+          }
         ]
       }
     }

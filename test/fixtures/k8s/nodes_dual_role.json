@@ -16,7 +16,9 @@
           "kubernetes.io/arch": "amd64",
           "kubernetes.io/hostname": "k8s-cp-1",
           "kubernetes.io/os": "linux",
-          "node-role.kubernetes.io/control-plane": ""
+          "node-role.kubernetes.io/control-plane": "",
+          "node-role.kubernetes.io/etcd": "",
+          "node-role.kubernetes.io/master": ""
         },
         "annotations": {
           "volumes.kubernetes.io/controller-managed-attach-detach": "true"
@@ -26,7 +28,12 @@
         "podCIDR": "10.244.0.0/24"
       },
       "status": {
-        "conditions": [{"status": "True", "type": "Ready"}]
+        "conditions": [
+          {
+            "status": "True",
+            "type": "Ready"
+          }
+        ]
       }
     },
     {
@@ -40,7 +47,9 @@
           "kubernetes.io/arch": "amd64",
           "kubernetes.io/hostname": "k8s-cp-2",
           "kubernetes.io/os": "linux",
-          "node-role.kubernetes.io/control-plane": ""
+          "node-role.kubernetes.io/control-plane": "",
+          "node-role.kubernetes.io/etcd": "",
+          "node-role.kubernetes.io/master": ""
         },
         "annotations": {
           "volumes.kubernetes.io/controller-managed-attach-detach": "true"
@@ -50,7 +59,12 @@
         "podCIDR": "10.244.1.0/24"
       },
       "status": {
-        "conditions": [{"status": "True", "type": "Ready"}]
+        "conditions": [
+          {
+            "status": "True",
+            "type": "Ready"
+          }
+        ]
       }
     },
     {
@@ -73,7 +87,12 @@
         "podCIDR": "10.244.2.0/24"
       },
       "status": {
-        "conditions": [{"status": "True", "type": "Ready"}]
+        "conditions": [
+          {
+            "status": "True",
+            "type": "Ready"
+          }
+        ]
       }
     }
   ]
