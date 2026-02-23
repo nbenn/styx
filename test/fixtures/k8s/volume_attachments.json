@@ -1,0 +1,66 @@
+{
+  "apiVersion": "storage.k8s.io/v1",
+  "kind": "VolumeAttachmentList",
+  "metadata": {
+    "resourceVersion": "99999"
+  },
+  "items": [
+    {
+      "apiVersion": "storage.k8s.io/v1",
+      "kind": "VolumeAttachment",
+      "metadata": {
+        "name": "csi-worker1-pvc-data",
+        "uid": "11111111-0000-0000-0000-000000000001",
+        "creationTimestamp": "2024-01-01T00:00:00Z"
+      },
+      "spec": {
+        "attacher": "rbd.csi.ceph.com",
+        "nodeName": "k8s-worker-1",
+        "source": {
+          "persistentVolumeName": "pvc-aaaabbbb-0000-0000-0000-000000000001"
+        }
+      },
+      "status": {
+        "attached": true
+      }
+    },
+    {
+      "apiVersion": "storage.k8s.io/v1",
+      "kind": "VolumeAttachment",
+      "metadata": {
+        "name": "csi-worker2-pvc-db",
+        "uid": "22222222-0000-0000-0000-000000000001",
+        "creationTimestamp": "2024-01-01T00:00:00Z"
+      },
+      "spec": {
+        "attacher": "rbd.csi.ceph.com",
+        "nodeName": "k8s-worker-2",
+        "source": {
+          "persistentVolumeName": "pvc-bbbbcccc-0000-0000-0000-000000000001"
+        }
+      },
+      "status": {
+        "attached": true
+      }
+    },
+    {
+      "apiVersion": "storage.k8s.io/v1",
+      "kind": "VolumeAttachment",
+      "metadata": {
+        "name": "csi-worker3-pvc-cache",
+        "uid": "33333333-0000-0000-0000-000000000001",
+        "creationTimestamp": "2024-01-01T00:00:00Z"
+      },
+      "spec": {
+        "attacher": "rbd.csi.ceph.com",
+        "nodeName": "k8s-worker-3",
+        "source": {
+          "persistentVolumeName": "pvc-ccccdddd-0000-0000-0000-000000000001"
+        }
+      },
+      "status": {
+        "attached": true
+      }
+    }
+  ]
+}

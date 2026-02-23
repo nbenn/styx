@@ -1,0 +1,32 @@
+{
+  "apiVersion": "storage.k8s.io/v1",
+  "kind": "VolumeAttachmentList",
+  "metadata": {
+    "resourceVersion": "100001"
+  },
+  "items": [
+    {
+      "apiVersion": "storage.k8s.io/v1",
+      "kind": "VolumeAttachment",
+      "metadata": {
+        "name": "csi-worker1-pvc-data",
+        "uid": "11111111-0000-0000-0000-000000000001",
+        "creationTimestamp": "2024-01-01T00:00:00Z"
+      },
+      "spec": {
+        "attacher": "rbd.csi.ceph.com",
+        "nodeName": "k8s-worker-1",
+        "source": {
+          "persistentVolumeName": "pvc-aaaabbbb-0000-0000-0000-000000000001"
+        }
+      },
+      "status": {
+        "attached": true,
+        "detachError": {
+          "message": "node not found",
+          "time": "2024-06-01T12:05:00Z"
+        }
+      }
+    }
+  ]
+}

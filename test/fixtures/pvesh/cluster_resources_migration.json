@@ -1,0 +1,33 @@
+[
+  {
+    "id": "qemu/101",
+    "name": "router",
+    "node": "pve1",
+    "status": "running",
+    "tags": "",
+    "template": 0,
+    "type": "qemu",
+    "vmid": 101
+  },
+  {
+    "id": "qemu/211",
+    "name": "k8s-worker-1",
+    "node": "pve2",
+    "status": "running",
+    "tags": "styx:k8s-worker",
+    "template": 0,
+    "type": "qemu",
+    "vmid": 211
+  },
+  {
+    "id": "qemu/212",
+    "lock": "migrate",
+    "name": "k8s-worker-2",
+    "node": "pve3",
+    "status": "running",
+    "tags": "styx:k8s-worker",
+    "template": 0,
+    "type": "qemu",
+    "vmid": 212
+  }
+]
