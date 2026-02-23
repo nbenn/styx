@@ -332,7 +332,7 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None):
     else:
         topo = discover(config, _on_warning=policy.on_warning)
 
-    if args.mode == 'maintenance':
+    if args.mode in ('maintenance', 'dry-run'):
         preflight(topo, config)
     policy.phase_gate(
         f'{len(topo.host_ips)} host(s), {len(topo.vm_host)} VM(s)'
