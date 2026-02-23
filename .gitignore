@@ -3,3 +3,5 @@
 .devcontainer/.gitconfig.local
 .devcontainer/.bashrc.local
 .claude
+__pycache__/
+*.pyc
