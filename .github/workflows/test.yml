@@ -7,22 +7,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Install bats
-        run: |
-          git clone https://github.com/bats-core/bats-core.git
-          cd bats-core && sudo ./install.sh /usr/local
 
       - name: Install dependencies
         run: sudo apt-get install -y python3
 
-      - name: Run Python unit tests
-        run: python3 -m unittest discover -s test/unit -p 'k8s_test.py' -v
-
       - name: Run unit tests
-        run: bats test/unit/
+        run: python3 -m unittest discover -s test/unit -p 'test_*.py' -v
 
       - name: Run integration tests
-        run: bats test/integration/
+        run: python3 -m unittest discover -s test -p 'test_*.py' -v

@@ -1,14 +1,12 @@
-#!/usr/bin/env python3
-"""lib/k8s.py — Minimal Kubernetes API client for styx.
+"""styx.k8s — Minimal Kubernetes API client.
 
-Replaces kubectl for the four operations styx needs:
-  reachable   — exit 0 if the API server is reachable, 1 otherwise
-  get-nodes   — print "name role" pairs (role: worker | control-plane)
-  cordon      — mark a node unschedulable
-  drain       — evict all non-daemonset pods from a node, wait until clear
+Covers the four operations styx needs:
+  reachable        — check if the API server responds
+  get_node_roles() — list of (name, role) tuples
+  cordon()         — mark a node unschedulable
+  drain()          — evict all drainable pods and wait until clear
 
-Usage:
-  python3 lib/k8s.py --server=URL --token-file=PATH [--ca-cert=PATH] <command> [args]
+CLI entry point preserved for standalone use / debugging.
 
 Dependencies: Python 3 stdlib only (urllib, ssl, json, argparse).
 """
@@ -40,13 +38,13 @@ def _ssl_context(ca_cert):
 class K8sClient:
     def __init__(self, server, token, ca_cert=None):
         self.server = server.rstrip('/')
-        self.token = token
-        self._ctx = _ssl_context(ca_cert)
+        self.token  = token
+        self._ctx   = _ssl_context(ca_cert)
 
     def _request(self, method, path, body=None, timeout=10):
-        url = self.server + path
+        url  = self.server + path
         data = json.dumps(body).encode() if body is not None else None
-        req = urllib.request.Request(url, data=data, method=method)
+        req  = urllib.request.Request(url, data=data, method=method)
         req.add_header('Authorization', f'Bearer {self.token}')
         req.add_header('Accept', 'application/json')
         if data is not None:
@@ -63,6 +61,24 @@ class K8sClient:
 
     def list_nodes(self):
         return self._request('GET', '/api/v1/nodes')
+
+    def get_node_roles(self):
+        """Return list of (name, role) tuples.
+
+        role is 'control-plane' or 'worker'.
+        """
+        data = self.list_nodes()
+        result = []
+        for item in data['items']:
+            name   = item['metadata']['name']
+            labels = item['metadata'].get('labels', {})
+            role   = (
+                'control-plane'
+                if 'node-role.kubernetes.io/control-plane' in labels
+                else 'worker'
+            )
+            result.append((name, role))
+        return result
 
     def cordon(self, node):
         self._request('PATCH', f'/api/v1/nodes/{node}',
@@ -91,8 +107,18 @@ class K8sClient:
             if e.code == 404:
                 return 'gone'    # already deleted
             if e.code in (422, 429):
-                return 'retry'   # PDB blocking; caller may retry
+                return 'retry'   # PDB blocking or rate-limited
             raise
+
+    # ── volume attachments ────────────────────────────────────────────────────
+
+    def list_volume_attachments(self):
+        """Return list of (name, nodeName) tuples for all VolumeAttachments."""
+        data = self._request('GET', '/apis/storage.k8s.io/v1/volumeattachments')
+        return [
+            (item['metadata']['name'], item.get('spec', {}).get('nodeName', ''))
+            for item in data.get('items', [])
+        ]
 
     # ── drain ─────────────────────────────────────────────────────────────────
 
@@ -100,11 +126,15 @@ class K8sClient:
     def _drainable(pod):
         """Return True if this pod should be evicted during a drain."""
         meta = pod['metadata']
-        # Skip DaemonSet-owned pods (cannot be evicted)
+        # Skip mirror pods (static pods managed via kubelet staticPodPath;
+        # not evictable via the API)
+        if 'kubernetes.io/config.mirror' in meta.get('annotations', {}):
+            return False
+        # Skip DaemonSet-owned pods
         for ref in meta.get('ownerReferences', []):
             if ref.get('kind') == 'DaemonSet':
                 return False
-        # Skip pods already in the process of being deleted
+        # Skip pods already being deleted
         if meta.get('deletionTimestamp'):
             return False
         # Skip completed / failed pods
@@ -133,7 +163,7 @@ class K8sClient:
         return False
 
 
-# ── commands ──────────────────────────────────────────────────────────────────
+# ── CLI commands ──────────────────────────────────────────────────────────────
 
 def cmd_reachable(client, _args):
     try:
@@ -144,15 +174,7 @@ def cmd_reachable(client, _args):
 
 
 def cmd_get_nodes(client, _args):
-    data = client.list_nodes()
-    for item in data['items']:
-        name = item['metadata']['name']
-        labels = item['metadata'].get('labels', {})
-        role = (
-            'control-plane'
-            if 'node-role.kubernetes.io/control-plane' in labels
-            else 'worker'
-        )
+    for name, role in client.get_node_roles():
         print(name, role)
     return 0
 
@@ -173,9 +195,9 @@ def cmd_drain(client, args):
 
 def main():
     p = argparse.ArgumentParser(description='Minimal k8s API client for styx')
-    p.add_argument('--server',     required=True, help='API server URL')
-    p.add_argument('--token-file', required=True, help='Path to bearer token file')
-    p.add_argument('--ca-cert',    default=None,  help='Path to CA certificate (optional)')
+    p.add_argument('--server',     required=True)
+    p.add_argument('--token-file', required=True)
+    p.add_argument('--ca-cert',    default=None)
 
     sub = p.add_subparsers(dest='command', required=True)
     sub.add_parser('reachable')
@@ -196,10 +218,10 @@ def main():
     client = K8sClient(args.server, token, args.ca_cert)
 
     dispatch = {
-        'reachable':  cmd_reachable,
-        'get-nodes':  cmd_get_nodes,
-        'cordon':     cmd_cordon,
-        'drain':      cmd_drain,
+        'reachable': cmd_reachable,
+        'get-nodes': cmd_get_nodes,
+        'cordon':    cmd_cordon,
+        'drain':     cmd_drain,
     }
     sys.exit(dispatch[args.command](client, args))
 
