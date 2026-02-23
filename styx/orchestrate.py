@@ -17,7 +17,7 @@ from styx.discover import (
     ClusterTopology, parse_cluster_status, parse_cluster_resources,
     match_nodes_to_vms,
 )
-from styx.policy import Policy, log, setup_log_file
+from styx.policy import Policy, MaintenancePolicy, log, setup_log_file
 from styx.wrappers import Operations
 
 
@@ -107,6 +107,55 @@ def discover(config, *, _pvesh_fn=None, _pveceph_fn=None):
     log(f'Ceph enabled: {topo.ceph_enabled}')
 
     return topo
+
+
+# ── pre-flight (maintenance mode) ────────────────────────────────────────────
+
+def preflight(topo, config):
+    """Check SSH reachability, k8s API, and Ceph health before any action.
+
+    Results are logged; the caller is responsible for any gate prompt.
+    """
+    log('--- Pre-flight ---')
+
+    for host, ip in topo.host_ips.items():
+        if host == topo.orchestrator:
+            continue
+        try:
+            subprocess.run(
+                ['ssh', '-o', 'ConnectTimeout=5', '-o', 'BatchMode=yes',
+                 f'root@{ip}', 'exit'],
+                capture_output=True, timeout=10, check=True,
+            )
+            log(f'SSH {host} ({ip}): OK')
+        except Exception as e:
+            log(f'SSH {host} ({ip}): UNREACHABLE ({e})')
+
+    if topo.k8s_enabled and config.k8s_server and config.k8s_token:
+        try:
+            k8s    = _make_k8s_client(config)
+            nodes  = k8s.list_nodes()
+            n      = len(nodes.get('items', []))
+            log(f'k8s API: OK ({n} nodes)')
+            for vmid in topo.k8s_workers + topo.k8s_cp:
+                node = topo.vm_name.get(vmid, vmid)
+                try:
+                    pods      = k8s.list_pods_on_node(node)['items']
+                    drainable = sum(1 for p in pods if k8s._drainable(p))
+                    log(f'  {node}: {drainable} pod(s) to evict')
+                except Exception:
+                    pass
+        except Exception as e:
+            log(f'k8s API: UNREACHABLE ({e})')
+
+    if topo.ceph_enabled:
+        try:
+            r = subprocess.run(
+                ['ceph', 'health'], capture_output=True, text=True, timeout=10,
+            )
+            log(f'Ceph: {r.stdout.strip() or r.stderr.strip()}')
+        except Exception as e:
+            log(f'Ceph: unavailable ({e})')
 
 
 # ── HA ────────────────────────────────────────────────────────────────────────
@@ -257,11 +306,17 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None):
     p.add_argument('--phase',   type=int, choices=[1, 2, 3], default=3)
     p.add_argument('--dry-run', action='store_true')
     p.add_argument('--config',  default='/etc/styx/styx.conf')
+    p.add_argument('--mode',    choices=['emergency', 'maintenance'],
+                   default='emergency')
     args = p.parse_args(argv)
 
     setup_log_file(os.environ.get('LOG_FILE', '/var/log/styx.log'))
 
-    policy = Policy(dry_run=args.dry_run)
+    policy = (
+        MaintenancePolicy(dry_run=args.dry_run)
+        if args.mode == 'maintenance'
+        else Policy(dry_run=args.dry_run)
+    )
     config = load_config(args.config)
 
     log('=' * 40)
@@ -271,6 +326,14 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None):
 
     _disc = _discover_fn or discover
     topo  = _disc(config)
+
+    if args.mode == 'maintenance':
+        preflight(topo, config)
+    policy.phase_gate(
+        f'{len(topo.host_ips)} host(s), {len(topo.vm_host)} VM(s)'
+        + (f', k8s workers={topo.k8s_workers} cp={topo.k8s_cp}' if topo.k8s_enabled else '')
+        + ' — proceed with shutdown?'
+    )
 
     if _ops_factory is not None:
         ops = _ops_factory(topo, config)
@@ -316,12 +379,15 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None):
         log(f'Phase {args.phase} complete')
         return
 
+    do_poweroff = should_poweroff_hosts(args.phase)
+    if do_poweroff:
+        policy.phase_gate('VM shutdown tracks complete — about to set Ceph flags and power off all hosts. Proceed?')
+
     # Ceph flags (phase 3 only, before polling loop)
     if should_set_ceph_flags(args.phase) and topo.ceph_enabled:
         log('--- Setting Ceph OSD flags ---')
         policy.execute('set_ceph_flags', ops.set_ceph_flags, config.ceph_flags)
 
-    do_poweroff = should_poweroff_hosts(args.phase)
     run_polling_loop(topo, ops, policy, do_poweroff)
 
     if do_poweroff:
