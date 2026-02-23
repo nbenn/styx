@@ -1,5 +1,7 @@
 # Styx
 
+[![codecov](https://codecov.io/gh/nbenn/styx/graph/badge.svg)](https://codecov.io/gh/nbenn/styx)
+
 Graceful cluster shutdown for Proxmox + Kubernetes + Ceph.
 
 Styx orchestrates a safe, ordered shutdown of your entire infrastructure stack — Kubernetes nodes first, then all VMs, then Ceph flags, then Proxmox hosts — designed to complete within a UPS battery window (typically 5–10 minutes).
