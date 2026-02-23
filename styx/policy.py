@@ -1,9 +1,9 @@
-"""styx.policy — Execution policy (dry-run + warning handling).
+"""styx.policy — Execution policy.
 
-Two concrete policies:
-  Policy            — emergency mode (default): warn and continue, no gates.
-  MaintenancePolicy — maintenance mode: warnings prompt [skip/abort],
-                      phase gates require explicit confirmation.
+Three concrete modes:
+  DryRunPolicy      — log all planned actions, execute nothing.
+  Policy            — emergency mode: execute automatically, warn and continue.
+  MaintenancePolicy — maintenance mode: pre-flight + interactive gates.
 """
 
 import datetime
@@ -34,14 +34,11 @@ def log(msg):
 
 
 class Policy:
-    """Emergency mode: warn and continue, phase gates are no-ops."""
-
-    def __init__(self, dry_run=False):
-        self._dry_run = dry_run
+    """Emergency mode: execute automatically, warn and continue, no gates."""
 
     @property
     def dry_run(self):
-        return self._dry_run
+        return False
 
     def on_warning(self, msg):
         log(f'WARNING: {msg}')
@@ -50,11 +47,20 @@ class Policy:
         """Checkpoint between phases. Emergency: no-op. Maintenance: prompt."""
 
     def execute(self, description, fn, *args, **kwargs):
-        """Run fn(*args, **kwargs), or log and skip in dry-run mode."""
-        if self._dry_run:
-            log(f'[dry-run] {description}')
-            return None
+        """Run fn(*args, **kwargs)."""
         return fn(*args, **kwargs)
+
+
+class DryRunPolicy(Policy):
+    """Dry-run mode: log all planned actions, execute nothing."""
+
+    @property
+    def dry_run(self):
+        return True
+
+    def execute(self, description, fn, *args, **kwargs):
+        log(f'[dry-run] {description}')
+        return None
 
 
 class MaintenancePolicy(Policy):
@@ -63,8 +69,7 @@ class MaintenancePolicy(Policy):
     Pass _input=<callable> to substitute stdin for testing.
     """
 
-    def __init__(self, dry_run=False, _input=None):
-        super().__init__(dry_run)
+    def __init__(self, _input=None):
         self._input = _input if _input is not None else input
         import threading
         self._lock = threading.Lock()

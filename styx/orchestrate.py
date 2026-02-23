@@ -17,7 +17,7 @@ from styx.discover import (
     ClusterTopology, parse_cluster_status, parse_cluster_resources,
     match_nodes_to_vms,
 )
-from styx.policy import Policy, MaintenancePolicy, log, setup_log_file
+from styx.policy import Policy, DryRunPolicy, MaintenancePolicy, log, setup_log_file
 from styx.wrappers import Operations
 
 
@@ -303,26 +303,26 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None):
     import argparse
 
     p = argparse.ArgumentParser(description='styx — graceful cluster shutdown')
-    p.add_argument('--phase',   type=int, choices=[1, 2, 3], default=3)
-    p.add_argument('--dry-run', action='store_true')
-    p.add_argument('--config',  default='/etc/styx/styx.conf')
-    p.add_argument('--mode',    choices=['emergency', 'maintenance'],
+    p.add_argument('--phase',  type=int, choices=[1, 2, 3], default=3)
+    p.add_argument('--config', default='/etc/styx/styx.conf')
+    p.add_argument('--mode',   choices=['dry-run', 'emergency', 'maintenance'],
                    default='emergency')
     args = p.parse_args(argv)
 
     setup_log_file(os.environ.get('LOG_FILE', '/var/log/styx.log'))
 
-    policy = (
-        MaintenancePolicy(dry_run=args.dry_run)
-        if args.mode == 'maintenance'
-        else Policy(dry_run=args.dry_run)
-    )
+    if args.mode == 'dry-run':
+        policy = DryRunPolicy()
+    elif args.mode == 'maintenance':
+        policy = MaintenancePolicy()
+    else:
+        policy = Policy()
     config = load_config(args.config)
 
     log('=' * 40)
     log('styx run started')
     log('=' * 40)
-    log(f'Phase: {args.phase}, dry-run: {args.dry_run}')
+    log(f'Mode: {args.mode}, Phase: {args.phase}')
 
     _disc = _discover_fn or discover
     topo  = _disc(config)

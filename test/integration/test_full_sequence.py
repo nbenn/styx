@@ -12,7 +12,7 @@ from styx.discover import ClusterTopology
 from styx.orchestrate import (
     run_k8s_track, run_other_vm_track, run_polling_loop, main,
 )
-from styx.policy import Policy
+from styx.policy import Policy, DryRunPolicy
 
 from test.integration.helpers import FakeOperations, start_fake_vm, kill_all_fake_vms
 
@@ -77,7 +77,7 @@ class TestKubernetesTrack(unittest.TestCase):
 
     def test_dry_run_does_not_drain_or_shutdown(self):
         ops = self._ops()
-        run_k8s_track(_default_topo(), _default_config(), ops, Policy(dry_run=True))
+        run_k8s_track(_default_topo(), _default_config(), ops, DryRunPolicy())
         self.assertEqual(ops.drain_log,    [])
         self.assertEqual(ops.shutdown_log, [])
 
@@ -143,7 +143,7 @@ class TestPollingLoop(unittest.TestCase):
             orchestrator = 'pve1',
             vm_host      = {},
         )
-        run_polling_loop(topo, ops, Policy(dry_run=True), do_poweroff=True, poll_interval=1)
+        run_polling_loop(topo, ops, DryRunPolicy(), do_poweroff=True, poll_interval=1)
         self.assertEqual(ops.poweroff_log, [])
 
 
@@ -234,7 +234,7 @@ class TestMainPhaseControl(unittest.TestCase):
         os.environ['STYX_POLL_INTERVAL'] = '1'
         try:
             main(
-                ['--phase', '3', '--dry-run', '--config', self._conf.name],
+                ['--phase', '3', '--mode', 'dry-run', '--config', self._conf.name],
                 _discover_fn=lambda c: topo,
                 _ops_factory=lambda t, c: ops,
             )
