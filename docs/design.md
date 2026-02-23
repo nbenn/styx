@@ -31,7 +31,7 @@ Styx auto-discovers the entire environment at startup. For standard setups, **no
 | Hosts + IPs | `pvesh get /cluster/status` — extract `type=node` entries | `[hosts]` section |
 | Orchestrator | `local == 1` from cluster status | `[orchestrator]` section |
 | VM-to-host mapping | `pvesh get /cluster/resources --type vm`, filter `type == "qemu"` | — (always needed) |
-| K8s worker/CP VMIDs | Priority: (1) `[kubernetes] workers/control_plane` config, (2) Proxmox VM tags `styx.k8s-worker` / `styx.k8s-cp`, (3) API: match node names to VM names via `node-role.kubernetes.io/control-plane` label | `[kubernetes] workers, control_plane` |
+| K8s worker/CP VMIDs | Priority: (1) `[kubernetes] workers/control_plane` config, (2) API: match node names to VM names via `node-role.kubernetes.io/control-plane` label | `[kubernetes] workers, control_plane` |
 | K8s credentials | `[kubernetes] server` + `token` + optional `ca_cert` (required for API-based discovery) | — |
 | Ceph enabled | `pveceph status` exits 0 | `[ceph] enabled` |
 | Ceph flags | defaults: `noout, norecover, norebalance, nobackfill, nodown` | `[ceph] flags` |
@@ -43,9 +43,8 @@ Styx auto-discovers the entire environment at startup. For standard setups, **no
 2. **VMs**: `pvesh get /cluster/resources --type vm --output-format json` → filter `type == "qemu"` (excludes LXC containers), build VMID-to-host and VMID-to-name maps. Filters out templates (`template == 1`) and stopped VMs.
 3. **Kubernetes**: worker/CP VMIDs are resolved in priority order:
    - **Config override**: if `workers` or `control_plane` are set in `[kubernetes]`, use them directly.
-   - **Tag-based**: if any running VM has a `styx.k8s-worker` or `styx.k8s-cp` Proxmox tag, use those.
-   - **API auto-discovery**: if `server` and `token` are set, call the Kubernetes API, extract node names and roles, match against Proxmox VM names. Workers = nodes without `control-plane` label; CP = nodes with it. If name matching yields zero matches → **abort with error**, ask user to configure `workers`/`control_plane` or add VM tags.
-   - If none of the above apply → skip k8s entirely (Proxmox-only mode).
+   - **API auto-discovery**: if `server` and `token` are set, call the Kubernetes API, extract node names and roles, match against Proxmox VM names. Workers = nodes without `control-plane` label; CP = nodes with it. If name matching yields zero matches → **abort with error**, ask user to configure `workers`/`control_plane` in config.
+   - If neither applies → skip k8s entirely (Proxmox-only mode).
    - If API is configured but unreachable → skip k8s (re-run scenario where k8s VMs are already off).
 4. **Ceph**: `pveceph status >/dev/null 2>&1` — exit 0 means Ceph is configured. If `[ceph] enabled` is explicitly set in config, that takes precedence.
 5. **HA**: `ha-manager status` → auto-detect HA-managed resources (phase >= 2 only).
@@ -451,8 +450,7 @@ load_config(path) -> StyxConfig       # INI file -> dataclass (all sections opti
 
 # styx/discover.py
 parse_cluster_status(data)            # pvesh cluster/status JSON -> (host_ips, orchestrator)
-parse_cluster_resources(data)         # pvesh cluster/resources JSON -> (vm_host, vm_name, vm_tags)
-classify_by_tags(vm_tags)             # Proxmox VM tags -> (workers, cp) VMID lists
+parse_cluster_resources(data)         # pvesh cluster/resources JSON -> (vm_host, vm_name)
 match_nodes_to_vms(vm_name, roles)    # k8s node names + VM names -> (workers, cp); raises on no match
 
 # styx/classify.py

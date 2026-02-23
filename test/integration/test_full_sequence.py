@@ -30,7 +30,6 @@ def _default_topo(run_dir=None, ceph=False):
         orchestrator= 'pve1',
         vm_host     = dict(_VM_HOST),
         vm_name     = dict(_VM_NAME),
-        vm_tags     = {v: [] for v in _VM_HOST},
         k8s_workers = ['211'],
         k8s_cp      = ['201'],
         k8s_enabled = True,
@@ -120,7 +119,6 @@ class TestPollingLoop(unittest.TestCase):
             orchestrator = 'pve1',
             vm_host      = {'211': 'pve2'},
             vm_name      = {'211': 'worker1'},
-            vm_tags      = {'211': []},
             k8s_workers  = ['211'],
         )
         # Kill the VM first so polling sees it as stopped immediately

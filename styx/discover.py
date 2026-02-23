@@ -5,9 +5,6 @@ Pure parsing functions; no external calls or side effects.
 
 from dataclasses import dataclass, field
 
-WORKER_TAG = 'styx.k8s-worker'
-CP_TAG     = 'styx.k8s-cp'
-
 
 @dataclass
 class ClusterTopology:
@@ -15,7 +12,6 @@ class ClusterTopology:
     orchestrator: str = ''
     vm_host:     dict = field(default_factory=dict)   # vmid -> hostname
     vm_name:     dict = field(default_factory=dict)   # vmid -> VM name
-    vm_tags:     dict = field(default_factory=dict)   # vmid -> list[str]
     k8s_workers: list = field(default_factory=list)   # VMIDs
     k8s_cp:      list = field(default_factory=list)   # VMIDs
     k8s_enabled: bool = False
@@ -37,13 +33,12 @@ def parse_cluster_status(data):
 
 
 def parse_cluster_resources(data):
-    """Parse /cluster/resources JSON list. Returns (vm_host, vm_name, vm_tags).
+    """Parse /cluster/resources JSON list. Returns (vm_host, vm_name).
 
     Filters to running non-template QEMU VMs only.
     """
     vm_host = {}
     vm_name = {}
-    vm_tags = {}
     for vm in data:
         if vm.get('type') != 'qemu':
             continue
@@ -54,21 +49,7 @@ def parse_cluster_resources(data):
         vmid = str(vm['vmid'])
         vm_host[vmid] = vm.get('node', '')
         vm_name[vmid] = vm.get('name', '')
-        raw = vm.get('tags', '') or ''
-        vm_tags[vmid] = [t.strip() for t in raw.split(';') if t.strip()]
-    return vm_host, vm_name, vm_tags
-
-
-def classify_by_tags(vm_tags):
-    """Return (workers, cp) VMID lists based on Proxmox tags."""
-    workers = []
-    cp = []
-    for vmid, tags in vm_tags.items():
-        if WORKER_TAG in tags:
-            workers.append(vmid)
-        elif CP_TAG in tags:
-            cp.append(vmid)
-    return workers, cp
+    return vm_host, vm_name
 
 
 def match_nodes_to_vms(vm_name, node_roles):
@@ -89,7 +70,6 @@ def match_nodes_to_vms(vm_name, node_roles):
     if not workers and not cp:
         raise ValueError(
             'No Kubernetes node names match any Proxmox VM name. '
-            'Provide workers/control_plane VMIDs in [kubernetes] config, '
-            'or tag VMs with styx.k8s-worker / styx.k8s-cp.'
+            'Provide workers/control_plane VMIDs in [kubernetes] config.'
         )
     return workers, cp

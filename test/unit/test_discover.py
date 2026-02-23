@@ -6,8 +6,7 @@ from pathlib import Path
 
 from styx.discover import (
     parse_cluster_status, parse_cluster_resources,
-    classify_by_tags, match_nodes_to_vms,
-    WORKER_TAG, CP_TAG,
+    match_nodes_to_vms,
 )
 
 _FIXTURES = Path(__file__).parent.parent / 'fixtures'
@@ -18,9 +17,6 @@ def _pvesh(name):
 
 
 class TestParseClusterStatus(unittest.TestCase):
-
-    def _data(self, nodes):
-        return nodes
 
     def test_extracts_hosts_and_ips(self):
         data = [
@@ -51,58 +47,31 @@ class TestParseClusterStatus(unittest.TestCase):
 
 class TestParseClusterResources(unittest.TestCase):
 
-    def _vm(self, vmid, name, node, status='running', template=0, tags=''):
+    def _vm(self, vmid, name, node, status='running', template=0):
         return {'type': 'qemu', 'vmid': vmid, 'name': name,
-                'node': node, 'status': status, 'template': template, 'tags': tags}
+                'node': node, 'status': status, 'template': template}
 
     def test_extracts_running_vms(self):
         data = [self._vm(101, 'web', 'pve1'), self._vm(102, 'db', 'pve2')]
-        vm_host, vm_name, _ = parse_cluster_resources(data)
+        vm_host, vm_name = parse_cluster_resources(data)
         self.assertEqual(vm_host['101'], 'pve1')
         self.assertEqual(vm_name['102'], 'db')
 
     def test_excludes_stopped_vms(self):
         data = [self._vm(101, 'web', 'pve1', status='stopped')]
-        vm_host, _, _ = parse_cluster_resources(data)
+        vm_host, _ = parse_cluster_resources(data)
         self.assertNotIn('101', vm_host)
 
     def test_excludes_templates(self):
         data = [self._vm(101, 'tmpl', 'pve1', template=1)]
-        vm_host, _, _ = parse_cluster_resources(data)
+        vm_host, _ = parse_cluster_resources(data)
         self.assertNotIn('101', vm_host)
 
     def test_excludes_lxc_containers(self):
         data = [{'type': 'lxc', 'vmid': 200, 'name': 'ct',
                  'node': 'pve1', 'status': 'running', 'template': 0}]
-        vm_host, _, _ = parse_cluster_resources(data)
+        vm_host, _ = parse_cluster_resources(data)
         self.assertNotIn('200', vm_host)
-
-    def test_parses_semicolon_separated_tags(self):
-        data = [self._vm(101, 'k8s', 'pve1', tags='styx.k8s-worker;production')]
-        _, _, vm_tags = parse_cluster_resources(data)
-        self.assertIn('styx.k8s-worker', vm_tags['101'])
-        self.assertIn('production', vm_tags['101'])
-
-
-class TestClassifyByTags(unittest.TestCase):
-
-    def test_identifies_workers(self):
-        vm_tags = {'101': [WORKER_TAG], '102': ['other']}
-        workers, cp = classify_by_tags(vm_tags)
-        self.assertIn('101', workers)
-        self.assertNotIn('101', cp)
-
-    def test_identifies_cp(self):
-        vm_tags = {'201': [CP_TAG]}
-        workers, cp = classify_by_tags(vm_tags)
-        self.assertIn('201', cp)
-        self.assertNotIn('201', workers)
-
-    def test_untagged_vms_not_included(self):
-        vm_tags = {'301': ['unrelated']}
-        workers, cp = classify_by_tags(vm_tags)
-        self.assertNotIn('301', workers)
-        self.assertNotIn('301', cp)
 
 
 class TestMatchNodesToVms(unittest.TestCase):
@@ -173,7 +142,7 @@ class TestClusterResourcesFixture(unittest.TestCase):
 
     def setUp(self):
         data = _pvesh('cluster_resources.json')
-        self.vm_host, self.vm_name, self.vm_tags = parse_cluster_resources(data)
+        self.vm_host, self.vm_name = parse_cluster_resources(data)
 
     def test_running_qemu_vms_included(self):
         for vmid in ('101', '102', '201', '211', '212', '213'):
@@ -198,24 +167,6 @@ class TestClusterResourcesFixture(unittest.TestCase):
         self.assertEqual(self.vm_name['201'], 'k8s-cp-1')
         self.assertEqual(self.vm_name['211'], 'k8s-worker-1')
 
-    def test_k8s_cp_tag_parsed(self):
-        self.assertIn('styx.k8s-cp', self.vm_tags['201'])
-
-    def test_k8s_worker_tag_parsed(self):
-        self.assertIn('styx.k8s-worker', self.vm_tags['211'])
-
-    def test_extra_tags_preserved(self):
-        self.assertIn('production', self.vm_tags['211'])
-
-    def test_classify_by_tags_identifies_workers_and_cp(self):
-        workers, cp = classify_by_tags(self.vm_tags)
-        self.assertIn('201', cp)
-        for vmid in ('211', '212', '213'):
-            self.assertIn(vmid, workers)
-        for vmid in ('101', '102'):
-            self.assertNotIn(vmid, workers)
-            self.assertNotIn(vmid, cp)
-
 
 class TestClusterResourcesMigrationFixture(unittest.TestCase):
     """VM with lock=migrate is still 'running' and must be included.
@@ -226,12 +177,12 @@ class TestClusterResourcesMigrationFixture(unittest.TestCase):
 
     def test_migrating_vm_included(self):
         data = _pvesh('cluster_resources_migration.json')
-        vm_host, _, _ = parse_cluster_resources(data)
+        vm_host, _ = parse_cluster_resources(data)
         self.assertIn('212', vm_host)
 
     def test_migrating_vm_node_is_current_location(self):
         data = _pvesh('cluster_resources_migration.json')
-        vm_host, _, _ = parse_cluster_resources(data)
+        vm_host, _ = parse_cluster_resources(data)
         # VM 212 migrated to pve3 — shutdown command must go to its new host
         self.assertEqual(vm_host['212'], 'pve3')
 

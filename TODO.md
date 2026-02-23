@@ -39,15 +39,13 @@ and the full-cluster-shutdown literature — do not add new bash code for these)
   clusters that run CephFS; reverse on startup. MON-last Proxmox host ordering is the right
   goal but requires Ceph topology awareness (which hosts run MONs) that styx does not currently
   have; note as a future improvement.
-- **proxmox-guardian patterns** (https://github.com/Guilhem-Bonnet/proxmox-guardian): add
-  tag-based VM role discovery as a third path alongside k8s API auto-discovery and explicit
-  VMID config — VMs tagged `styx.k8s-worker` / `styx.k8s-cp` in Proxmox are picked up via the
-  cluster resources API already called during discovery, covering the case where the k8s API is
-  unreachable but config lists are not maintained. Per-action error policy is covered by the
-  `Policy` pattern in step 5 (emergency = warn-and-continue, maintenance = prompt); no
-  additional per-operation configuration matrix needed. Persistent state is unnecessary as long
-  as all actions remain idempotent. Startup/recovery is a manual procedure with clear
-  documentation, not automated.
+- **proxmox-guardian patterns** (https://github.com/Guilhem-Bonnet/proxmox-guardian): per-action
+  error policy is covered by the `Policy` pattern in step 5 (emergency = warn-and-continue,
+  maintenance = prompt); no additional per-operation configuration matrix needed. Persistent
+  state is unnecessary as long as all actions remain idempotent. Startup/recovery is a manual
+  procedure with clear documentation, not automated. Tag-based VM discovery was considered and
+  rejected: it adds a third discovery mechanism (alongside config and API auto-discovery) with
+  no added value — if the k8s API is unreachable, drain cannot run anyway.
 
 **Design constraints for later steps — don't box in:**
 

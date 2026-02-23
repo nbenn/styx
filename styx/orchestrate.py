@@ -15,7 +15,7 @@ from styx.decide import (
 )
 from styx.discover import (
     ClusterTopology, parse_cluster_status, parse_cluster_resources,
-    classify_by_tags, match_nodes_to_vms,
+    match_nodes_to_vms,
 )
 from styx.policy import Policy, log, setup_log_file
 from styx.wrappers import Operations
@@ -72,40 +72,32 @@ def discover(config, *, _pvesh_fn=None, _pveceph_fn=None):
     log(f'Hosts: {" ".join(f"{h}({ip})" for h, ip in topo.host_ips.items())}')
 
     # VMs
-    topo.vm_host, topo.vm_name, topo.vm_tags = parse_cluster_resources(
+    topo.vm_host, topo.vm_name = parse_cluster_resources(
         pvesh('/cluster/resources', '--type', 'vm')
     )
     log(f'Running VMs: {" ".join(topo.vm_host)}')
 
-    # Kubernetes — priority: config override > tags > API auto-discovery
+    # Kubernetes — config override, then API auto-discovery
     if config.workers or config.control_plane:
         topo.k8s_workers  = list(config.workers)
         topo.k8s_cp       = list(config.control_plane)
         topo.k8s_enabled  = True
         log(f'Kubernetes: config override '
             f'(workers={topo.k8s_workers} cp={topo.k8s_cp})')
-    else:
-        tag_workers, tag_cp = classify_by_tags(topo.vm_tags)
-        if tag_workers or tag_cp:
-            topo.k8s_workers = tag_workers
-            topo.k8s_cp      = tag_cp
+    elif config.k8s_server and config.k8s_token:
+        try:
+            k8s        = _make_k8s_client(config)
+            node_roles = k8s.get_node_roles()
+            topo.k8s_workers, topo.k8s_cp = match_nodes_to_vms(topo.vm_name, node_roles)
             topo.k8s_enabled = True
-            log(f'Kubernetes: tag-based discovery '
+            log(f'Kubernetes: API discovery '
                 f'(workers={topo.k8s_workers} cp={topo.k8s_cp})')
-        elif config.k8s_server and config.k8s_token:
-            try:
-                k8s        = _make_k8s_client(config)
-                node_roles = k8s.get_node_roles()
-                topo.k8s_workers, topo.k8s_cp = match_nodes_to_vms(topo.vm_name, node_roles)
-                topo.k8s_enabled = True
-                log(f'Kubernetes: API discovery '
-                    f'(workers={topo.k8s_workers} cp={topo.k8s_cp})')
-            except Exception as e:
-                log(f'Kubernetes API unreachable ({e}) — skipping k8s')
-                topo.k8s_enabled = False
-        else:
-            log('No [kubernetes] credentials configured — skipping k8s')
+        except Exception as e:
+            log(f'Kubernetes API unreachable ({e}) — skipping k8s')
             topo.k8s_enabled = False
+    else:
+        log('No [kubernetes] credentials configured — skipping k8s')
+        topo.k8s_enabled = False
 
     # Ceph
     if config.ceph_enabled is not None:
