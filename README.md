@@ -19,26 +19,28 @@ Phases 1 and 2 run concurrently as two parallel tracks. VM shutdowns use the QEM
 ## Requirements
 
 - Proxmox cluster with SSH between all hosts (root, key-based)
-- `socat` on all Proxmox hosts (standard on Proxmox)
-- `python3` on the orchestrator (standard on Proxmox)
+- `python3` on all Proxmox hosts (standard on Proxmox)
 
 ## Installation
 
+Download the latest `styx.pyz` release artifact and place it on shared Proxmox snippets storage (NFS or CephFS with `content snippets`). The file is then available at the same path on every node without per-node installation.
+
 ```bash
-cp bin/styx           /usr/local/bin/styx
-cp bin/styx-vm-shutdown /usr/local/bin/styx-vm-shutdown
-chmod +x /usr/local/bin/styx /usr/local/bin/styx-vm-shutdown
+# Download
+curl -L https://github.com/nbenn/styx/releases/latest/download/styx.pyz \
+    -o /var/lib/vz/snippets/styx.pyz
+chmod +x /var/lib/vz/snippets/styx.pyz
 
 # Optional: copy config if you need to override auto-discovery
 cp styx.conf.example /etc/styx/styx.conf
 ```
 
-`styx` runs on the orchestrator only. `styx-vm-shutdown` must be on **all** Proxmox hosts.
+Both subcommands (`orchestrate` and `vm-shutdown`) are bundled in the single `styx.pyz` file and available on all nodes via the shared path.
 
 ## Usage
 
 ```
-styx [options]
+styx.pyz orchestrate [options]
 
 Options:
   --dry-run        Log all actions without executing them
@@ -50,16 +52,16 @@ Typical invocations:
 
 ```bash
 # Full shutdown (all phases)
-styx
+styx.pyz orchestrate
 
 # Test what would happen without doing anything
-styx --dry-run
+styx.pyz orchestrate --dry-run
 
 # Drain k8s and shut down k8s VMs only
-styx --phase 1
+styx.pyz orchestrate --phase 1
 
 # Re-run phase 3 after a partial shutdown (k8s already down)
-styx --phase 3
+styx.pyz orchestrate --phase 3
 ```
 
 ## Configuration
@@ -94,8 +96,8 @@ See [`styx.conf.example`](styx.conf.example) for the full reference.
 
 Styx is a command, not a daemon. Wire it to your trigger of choice:
 
-- **NUT** (Network UPS Tools): add `SHUTDOWNCMD "/usr/local/bin/styx"` to `upsmon.conf`
-- **Manual**: run `styx` directly on the orchestrator
+- **NUT** (Network UPS Tools): add `SHUTDOWNCMD "/var/lib/vz/snippets/styx.pyz orchestrate"` to `upsmon.conf`
+- **Manual**: run `styx.pyz orchestrate` directly on the orchestrator
 - **Cron/systemd**: call from a shutdown script
 
 ## Logging
@@ -114,14 +116,12 @@ After power is restored:
 
 ## Testing
 
-Tests use [bats](https://github.com/bats-core/bats-core).
-
 ```bash
-bats test/unit/
-bats test/integration/
+python3 -m unittest discover -s test/unit -p 'test_*.py'
+python3 -m unittest discover -s test -p 'test_*.py'
 ```
 
-Unit tests cover pure decision logic (no infrastructure needed). Integration tests run a full shutdown sequence using fake wrappers and simulated PID files.
+Unit tests cover pure decision logic and fixture-based parsing (no infrastructure needed). Integration tests run a full shutdown sequence using fake wrappers and simulated PID files.
 
 ## Scope and limitations
 
