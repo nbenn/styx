@@ -132,14 +132,19 @@ _discover_k8s() {
     return 0
   fi
 
-  # Try kubectl auto-discovery
+  # No credentials configured — skip k8s entirely
+  if [[ -z "${STYX_K8S_SERVER:-}" || -z "${STYX_K8S_TOKEN:-}" ]]; then
+    log "No [kubernetes] server/token configured — skipping k8s"
+    K8S_WORKERS=()
+    K8S_CP=()
+    K8S_ENABLED=false
+    return 0
+  fi
+
+  # Try API auto-discovery
   if is_api_reachable; then
-    local kubeconfig_arg=""
-    [[ -n "${STYX_KUBECONFIG:-}" ]] && kubeconfig_arg="--kubeconfig=${STYX_KUBECONFIG}"
-    local nodes_json
-    nodes_json="$(kubectl ${kubeconfig_arg} get nodes -o json)"
     local node_roles
-    node_roles="$(parse_kubectl_nodes "$nodes_json")"
+    node_roles="$(get_k8s_nodes)"
     if ! match_nodes_to_vms VMID_NAME "$node_roles"; then
       exit 1
     fi
@@ -147,7 +152,7 @@ _discover_k8s() {
     log "Kubernetes control-plane: ${K8S_CP[*]:-none}"
     K8S_ENABLED=true
   else
-    log "Kubernetes API unreachable and no [kubernetes] config — skipping k8s"
+    log "Kubernetes API unreachable — skipping k8s"
     K8S_WORKERS=()
     K8S_CP=()
     K8S_ENABLED=false

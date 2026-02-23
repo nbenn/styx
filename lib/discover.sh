@@ -17,18 +17,16 @@ parse_cluster_status() {
   local json="$1"
   declare -gA HOST_IPS=()
 
-  local names ips locals
-  mapfile -t names  < <(echo "$json" | jq -r '.[] | select(.type=="node") | .name')
-  mapfile -t ips    < <(echo "$json" | jq -r '.[] | select(.type=="node") | .ip')
-  mapfile -t locals < <(echo "$json" | jq -r '.[] | select(.type=="node") | .local')
-
-  local i
-  for (( i=0; i<${#names[@]}; i++ )); do
-    HOST_IPS["${names[$i]}"]="${ips[$i]}"
-    if [[ "${locals[$i]}" == "1" ]]; then
-      ORCHESTRATOR="${names[$i]}"
-    fi
-  done
+  local name ip local_flag
+  while read -r name ip local_flag; do
+    HOST_IPS["$name"]="$ip"
+    if [[ "$local_flag" == "1" ]]; then ORCHESTRATOR="$name"; fi
+  done < <(python3 -c "
+import json, sys
+for n in json.load(sys.stdin):
+    if n.get('type') == 'node':
+        print(n.get('name',''), n.get('ip',''), n.get('local', 0))
+" <<< "$json")
 }
 
 # parse_cluster_resources JSON
@@ -39,39 +37,18 @@ parse_cluster_resources() {
   declare -gA VMID_HOST=()
   declare -gA VMID_NAME=()
 
-  local vmids names hosts statuses templates
-  mapfile -t vmids     < <(echo "$json" | jq -r '.[] | select(.type=="qemu") | .vmid | tostring')
-  mapfile -t names     < <(echo "$json" | jq -r '.[] | select(.type=="qemu") | .name')
-  mapfile -t hosts     < <(echo "$json" | jq -r '.[] | select(.type=="qemu") | .node')
-  mapfile -t statuses  < <(echo "$json" | jq -r '.[] | select(.type=="qemu") | .status')
-  mapfile -t templates < <(echo "$json" | jq -r '.[] | select(.type=="qemu") | (.template // 0) | tostring')
-
-  local i
-  for (( i=0; i<${#vmids[@]}; i++ )); do
-    [[ "${templates[$i]}" == "1" ]]     && continue
-    [[ "${statuses[$i]}"  != "running" ]] && continue
-    VMID_HOST["${vmids[$i]}"]="${hosts[$i]}"
-    VMID_NAME["${vmids[$i]}"]="${names[$i]}"
-  done
-}
-
-# parse_kubectl_nodes JSON
-# Outputs pairs "name role" where role is "control-plane" or "worker".
-# Used by match_nodes_to_vms.
-parse_kubectl_nodes() {
-  local json="$1"
-  # Emit "name control-plane" or "name worker" per node
-  echo "$json" | jq -r '
-    .items[] |
-    .metadata.name as $name |
-    (
-      if (.metadata.labels | has("node-role.kubernetes.io/control-plane"))
-      then "control-plane"
-      else "worker"
-      end
-    ) as $role |
-    "\($name) \($role)"
-  '
+  local vmid name host
+  while read -r vmid name host; do
+    VMID_HOST["$vmid"]="$host"
+    VMID_NAME["$vmid"]="$name"
+  done < <(python3 -c "
+import json, sys
+for v in json.load(sys.stdin):
+    if v.get('type') != 'qemu': continue
+    if v.get('template', 0): continue
+    if v.get('status') != 'running': continue
+    print(v['vmid'], v.get('name',''), v.get('node',''))
+" <<< "$json")
 }
 
 # match_nodes_to_vms node_role_lines vmid_name_assoc_name

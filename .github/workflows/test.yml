@@ -16,7 +16,10 @@ jobs:
           cd bats-core && sudo ./install.sh /usr/local
 
       - name: Install dependencies
-        run: sudo apt-get install -y jq
+        run: sudo apt-get install -y python3
+
+      - name: Run Python unit tests
+        run: python3 -m unittest discover -s test/unit -p 'k8s_test.py' -v
 
       - name: Run unit tests
         run: bats test/unit/

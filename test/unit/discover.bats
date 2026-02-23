@@ -86,36 +86,6 @@ setup() {
 }
 
 # ---------------------------------------------------------------------------
-# parse_kubectl_nodes
-# ---------------------------------------------------------------------------
-
-@test "parse_kubectl_nodes identifies control-plane nodes" {
-  local json='{
-    "items": [{
-      "metadata": {
-        "name": "cp1",
-        "labels": {"node-role.kubernetes.io/control-plane": ""}
-      }
-    }]
-  }'
-  run parse_kubectl_nodes "$json"
-  [[ "$output" == *"cp1 control-plane"* ]]
-}
-
-@test "parse_kubectl_nodes identifies worker nodes" {
-  local json='{
-    "items": [{
-      "metadata": {
-        "name": "worker1",
-        "labels": {}
-      }
-    }]
-  }'
-  run parse_kubectl_nodes "$json"
-  [[ "$output" == *"worker1 worker"* ]]
-}
-
-# ---------------------------------------------------------------------------
 # match_nodes_to_vms
 # ---------------------------------------------------------------------------
 

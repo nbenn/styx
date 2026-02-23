@@ -8,7 +8,9 @@
 #   STYX_ORCHESTRATOR   — string (from [orchestrator] host)
 #   STYX_WORKERS        — space-separated VMIDs (from [kubernetes] workers)
 #   STYX_CP             — space-separated VMIDs (from [kubernetes] control_plane)
-#   STYX_KUBECONFIG     — path (from [kubernetes] kubeconfig)
+#   STYX_K8S_SERVER     — API server URL (from [kubernetes] server)
+#   STYX_K8S_TOKEN      — path to bearer token file (from [kubernetes] token)
+#   STYX_K8S_CA_CERT    — path to CA certificate (from [kubernetes] ca_cert, optional)
 #   STYX_CEPH_ENABLED   — "true"/"false" (from [ceph] enabled)
 #   STYX_CEPH_FLAGS     — space-separated flags (from [ceph] flags)
 #   STYX_TIMEOUT_DRAIN  — integer seconds (from [timeouts] drain)
@@ -63,9 +65,9 @@ parse_config() {
             control_plane)
               STYX_CP="$(echo "$val" | tr ',' ' ' | tr -s ' ')"
               ;;
-            kubeconfig)
-              STYX_KUBECONFIG="$val"
-              ;;
+            server)   STYX_K8S_SERVER="$val"  ;;
+            token)    STYX_K8S_TOKEN="$val"   ;;
+            ca_cert)  STYX_K8S_CA_CERT="$val" ;;
           esac
           ;;
         ceph)

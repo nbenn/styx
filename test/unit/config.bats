@@ -52,13 +52,17 @@ EOF
   [[ "$STYX_CP"      == "201 202" ]]
 }
 
-@test "parse [kubernetes] kubeconfig" {
+@test "parse [kubernetes] server, token, and ca_cert" {
   write_conf <<'EOF'
 [kubernetes]
-kubeconfig = /etc/styx/kubeconfig
+server = https://10.0.0.100:6443
+token = /etc/styx/k8s-token
+ca_cert = /etc/styx/k8s-ca.crt
 EOF
   parse_config "${TMPDIR}/styx.conf"
-  [[ "$STYX_KUBECONFIG" == "/etc/styx/kubeconfig" ]]
+  [[ "$STYX_K8S_SERVER"  == "https://10.0.0.100:6443" ]]
+  [[ "$STYX_K8S_TOKEN"   == "/etc/styx/k8s-token"     ]]
+  [[ "$STYX_K8S_CA_CERT" == "/etc/styx/k8s-ca.crt"    ]]
 }
 
 @test "parse [ceph] enabled and flags" {

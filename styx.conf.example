@@ -14,11 +14,14 @@
 #[orchestrator]
 #host = pve1
 
-# Override Kubernetes node classification.
-# Required if Kubernetes node names don't match Proxmox VM names.
-# Default kubeconfig: /root/.kube/config
+# Kubernetes API credentials and optional node classification override.
+# server and token are required for any Kubernetes integration.
+# workers / control_plane override auto-discovery (required if VM names
+# don't match Kubernetes node names).
 #[kubernetes]
-#kubeconfig = /etc/styx/kubeconfig
+#server = https://10.0.0.100:6443
+#token = /etc/styx/k8s-token
+#ca_cert = /etc/styx/k8s-ca.crt
 #workers = 211, 212, 213, 214, 215
 #control_plane = 201, 202, 203
 

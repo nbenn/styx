@@ -30,33 +30,39 @@ get_running_vmids() {
   '
 }
 
+# _k8s COMMAND [ARGS...]
+# Internal helper: invoke lib/k8s.py with credentials from config variables.
+# Requires STYX_K8S_SERVER and STYX_K8S_TOKEN to be set.
+_k8s() {
+  local extra_args=()
+  [[ -n "${STYX_K8S_CA_CERT:-}" ]] && extra_args=(--ca-cert="${STYX_K8S_CA_CERT}")
+  python3 "${STYX_DIR}/lib/k8s.py" \
+    --server="${STYX_K8S_SERVER}" \
+    --token-file="${STYX_K8S_TOKEN}" \
+    "${extra_args[@]}" \
+    "$@"
+}
+
 # is_api_reachable
-# Returns 0 if kubectl can reach the API server, non-zero otherwise.
+# Returns 0 if the Kubernetes API server is reachable, non-zero otherwise.
 is_api_reachable() {
-  local kubeconfig_arg=""
-  [[ -n "${STYX_KUBECONFIG:-}" ]] && kubeconfig_arg="--kubeconfig=${STYX_KUBECONFIG}"
-  kubectl ${kubeconfig_arg} get nodes --request-timeout=5s >/dev/null 2>&1
+  _k8s reachable >/dev/null 2>&1
+}
+
+# get_k8s_nodes
+# Outputs "name role" pairs for all nodes (role: worker | control-plane).
+get_k8s_nodes() {
+  _k8s get-nodes
 }
 
 # cordon_node NODE_NAME
 cordon_node() {
-  local node="$1"
-  local kubeconfig_arg=""
-  [[ -n "${STYX_KUBECONFIG:-}" ]] && kubeconfig_arg="--kubeconfig=${STYX_KUBECONFIG}"
-  kubectl ${kubeconfig_arg} cordon "$node"
+  _k8s cordon "$1"
 }
 
 # drain_node NODE_NAME TIMEOUT_SECONDS
 drain_node() {
-  local node="$1"
-  local timeout="${2:-120}"
-  local kubeconfig_arg=""
-  [[ -n "${STYX_KUBECONFIG:-}" ]] && kubeconfig_arg="--kubeconfig=${STYX_KUBECONFIG}"
-  kubectl ${kubeconfig_arg} drain "$node" \
-    --ignore-daemonsets \
-    --delete-emptydir-data \
-    --force \
-    --timeout="${timeout}s"
+  _k8s drain "$1" --timeout="${2:-120}"
 }
 
 # shutdown_vm HOSTNAME VMID TIMEOUT_SECONDS

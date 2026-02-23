@@ -20,9 +20,7 @@ Phases 1 and 2 run concurrently as two parallel tracks. VM shutdowns use the QEM
 
 - Proxmox cluster with SSH between all hosts (root, key-based)
 - `socat` on all Proxmox hosts (standard on Proxmox)
-- `jq` on the orchestrator
-- `kubectl` on the orchestrator (if using Kubernetes)
-- `ceph` CLI on the orchestrator (if using Ceph)
+- `python3` on the orchestrator (standard on Proxmox)
 
 ## Installation
 

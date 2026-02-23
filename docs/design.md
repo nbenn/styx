@@ -31,8 +31,8 @@ Styx auto-discovers the entire environment at startup. For standard setups, **no
 | Hosts + IPs | `pvesh get /cluster/status` — extract `type=node` entries | `[hosts]` section |
 | Orchestrator | `local == 1` from cluster status | `[orchestrator]` section |
 | VM-to-host mapping | `pvesh get /cluster/resources --type vm`, filter `type == "qemu"` | — (always needed) |
-| K8s worker/CP VMIDs | `kubectl get nodes` — match node names to VM names, classify by `node-role.kubernetes.io/control-plane` label | `[kubernetes] workers, control_plane` |
-| Kubeconfig path | `/root/.kube/config` (kubectl default) | `[kubernetes] kubeconfig` |
+| K8s worker/CP VMIDs | `lib/k8s.py get-nodes` — match node names to VM names, classify by `node-role.kubernetes.io/control-plane` label | `[kubernetes] workers, control_plane` |
+| K8s credentials | `[kubernetes] server` + `token` (required for any k8s integration) | — |
 | Ceph enabled | `pveceph status` exits 0 | `[ceph] enabled` |
 | Ceph flags | defaults: `noout, norecover, norebalance, nobackfill, nodown, noup` | `[ceph] flags` |
 | Timeouts | defaults: drain=120, vm=120 | `[timeouts]` |
@@ -41,11 +41,11 @@ Styx auto-discovers the entire environment at startup. For standard setups, **no
 
 1. **Hosts**: `pvesh get /cluster/status --output-format json` → filter `type == "node"` → extract `name` and `ip`. The entry with `local == 1` is the orchestrator. If `[hosts]` is in config, use that instead.
 2. **VMs**: `pvesh get /cluster/resources --type vm --output-format json` → filter `type == "qemu"` (excludes LXC containers), build VMID-to-host and VMID-to-name maps. Filters out templates (`template == 1`) and stopped VMs.
-3. **Kubernetes**: try `kubectl get nodes -o json` using default or configured kubeconfig.
+3. **Kubernetes**: if `[kubernetes] server` and `token` are configured, try `lib/k8s.py get-nodes`.
    - If reachable: extract node names and roles. Match node names against VM names from step 2. Workers = nodes without `control-plane` role. CP = nodes with it.
    - If name matching fails (no VM name matches any node name) → **abort with error**, ask user to provide `workers` and `control_plane` in config.
-   - If kubectl not reachable and no `[kubernetes]` in config → skip k8s entirely (Proxmox-only mode).
-   - If kubectl not reachable but `[kubernetes]` in config → use config values (re-run scenario where k8s VMs are already off).
+   - If `server`/`token` not configured and no `workers`/`control_plane` in config → skip k8s entirely (Proxmox-only mode).
+   - If `server`/`token` configured but API unreachable → skip k8s (re-run scenario where k8s VMs are already off).
 4. **Ceph**: `pveceph status >/dev/null 2>&1` — exit 0 means Ceph is configured. If `[ceph] enabled` is explicitly set in config, that takes precedence.
 5. **HA**: `ha-manager status` → auto-detect HA-managed resources (phase >= 2 only).
 
@@ -143,8 +143,7 @@ All sections are optional. SSH must be set up between all Proxmox hosts (root, k
 
 - **Proxmox cluster** with SSH between all hosts (root, key-based)
 - **socat** installed on all Proxmox hosts (standard on Proxmox)
-- **jq** installed on the orchestrator (for JSON parsing of `pvesh`/`kubectl` output)
-- **kubectl** on the orchestrator (if using Kubernetes)
+- **python3** on the orchestrator (standard on Proxmox; used for JSON parsing and the Kubernetes API client)
 - **ceph** CLI on the orchestrator or a Ceph node (if using Ceph)
 
 ### File Layout
@@ -520,10 +519,11 @@ One-line functions calling external commands. Overridden with fakes in tests.
 ```bash
 run_on_host()          # ssh -o ConnectTimeout=5 root@$host "$cmd" (or local if self)
 get_running_vms()      # scan PID files on a host
-drain_node()           # kubectl drain --ignore-daemonsets --delete-emptydir-data --force --timeout=...
+drain_node()           # lib/k8s.py drain <node> --timeout=...
 shutdown_vm()          # styx-vm-shutdown (local or via SSH)
-cordon_node()          # kubectl cordon ...
-is_api_reachable()     # kubectl get nodes --request-timeout=5s
+cordon_node()          # lib/k8s.py cordon <node>
+is_api_reachable()     # lib/k8s.py reachable
+get_k8s_nodes()        # lib/k8s.py get-nodes → "name role" pairs
 set_ceph_flags()       # ceph osd set <flags>
 disable_ha()           # ha-manager status + set --state disabled
 poweroff_host()        # ssh root@$host poweroff
