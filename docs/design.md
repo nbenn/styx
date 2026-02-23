@@ -149,6 +149,8 @@ All sections are optional. SSH must be set up between all Proxmox hosts (root, k
 - **Proxmox cluster** with SSH between all hosts (root, key-based)
 - **python3** on **all** Proxmox hosts (standard on Proxmox 8+; used for orchestration and VM shutdown)
 - **ceph** CLI on the orchestrator or a Ceph node (if using Ceph)
+- **`shutdown_policy = freeze`** in Proxmox `datacenter.cfg` (cluster-side): prevents HA from attempting to relocate VMs to surviving nodes during the shutdown window. Without this, HA may fight the shutdown sequence.
+- **kubelet `GracefulNodeShutdown`** (`shutdownGracePeriod` in kubelet config, node-side): ensures the kubelet participates in ACPI shutdown and terminates pods cleanly before the node powers off. This is a node-side prerequisite; styx has no visibility into it and does not configure it.
 
 ### File Layout
 
@@ -620,6 +622,12 @@ def test_dry_run_no_side_effects(self):
 | ha-manager interaction | `--mode dry-run`, verify manually |
 | Actual VM shutdown timing | Tune timeouts based on observation |
 
+### E2E Coverage
+
+**Proxmox track**: GitHub-hosted runners have no KVM, so Proxmox E2E in CI is not feasible without a self-hosted runner on real hardware. Covered instead by realistic fixtures (validated against a real cluster) and the integration tests with `FakeOperations`.
+
+**Kubernetes track**: A kind-cluster E2E (spin up cluster, deploy workloads, run `styx --phase 1`, assert nodes cordoned and pods evicted) would give high confidence but requires significant CI infrastructure. The unit tests for `K8sClient` (cordon, drain, mirror pod filtering, VolumeAttachment checks) and the integration tests with injected fakes cover the logic. The gap is end-to-end API interaction against a real cluster.
+
 ## Open Issues
 
 No blocking issues remain. All open items have been resolved — see design decisions below.
@@ -669,6 +677,18 @@ Non-issue. The polling loop uses `kill -0 $(cat pidfile)` which checks if the **
 
 Out of scope for v1. Stretch goal for v2.
 
+### Resolved: Tag-based VM discovery
+
+Considered adding a third discovery mechanism: tag Proxmox VMs with `styx.k8s-worker` / `styx.k8s-cp` and classify from those tags. Rejected. Two discovery mechanisms already exist (API auto-discovery via node name matching, config override). A third adds operational burden — a node can be tagged but config forgotten, or vice versa — with no added value: if the Kubernetes API is unreachable, drain cannot run regardless of how the nodes were classified.
+
+### Resolved: proxmox-guardian patterns
+
+Reviewed [proxmox-guardian](https://github.com/Guilhem-Bonnet/proxmox-guardian) as prior art. Outcomes:
+- **Per-action error policy**: covered by the `Policy` class pattern — `emergency` warns and continues, `maintenance` prompts. No additional per-operation configuration matrix needed.
+- **Persistent state**: unnecessary as long as all actions remain idempotent (they do).
+- **Startup/recovery automation**: manual procedure with clear documentation is the right trade-off; automating recovery risks acting on incomplete state.
+- **Tag-based VM discovery**: considered and rejected (see above).
+
 ## Known Limitations
 
 - **VMs only**: LXC containers and Proxmox 9 OCI containers are not supported. The architecture allows adding a `styx-ct-shutdown` helper later.
@@ -676,3 +696,5 @@ Out of scope for v1. Stretch goal for v2.
 - **No single-node support (v1)**: Styx assumes a multi-node Proxmox cluster. Single-node is a simpler problem and could be a stretch goal for v2.
 - **VM migration**: Do not run styx while a VM live migration is in progress. The VMID-to-host mapping is captured once at startup and not refreshed. A migrating VM may receive shutdown commands on the wrong host. The `pvesh` resource data includes a `status` field that could potentially detect migrations — this is a future enhancement if needed.
 - **Orphaned shutdown processes**: If the main `styx` script is killed, backgrounded `styx-vm-shutdown` processes continue running. This is intentional — they will complete their VM shutdowns independently.
+- **CephFS teardown**: Clusters running CephFS could benefit from an explicit `ceph fs fail` + `ceph fs set cluster_down true` before shutdown, reversed on startup. Not implemented; CephFS clusters should verify filesystem health after recovery.
+- **MON-last host ordering**: Powering off the Proxmox host running the Ceph MON last would be ideal to maintain Ceph quorum as long as possible. This requires Ceph topology awareness (which hosts run MONs) that styx does not currently have. The polling loop powers off hosts as their VMs stop, which is correct but not MON-aware.
