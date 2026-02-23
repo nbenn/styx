@@ -1,7 +1,6 @@
 [
   {
     "id": "cluster",
-    "maxnodes": 3,
     "name": "proxmox",
     "nodes": 3,
     "quorate": 1,

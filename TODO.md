@@ -41,7 +41,7 @@ and the full-cluster-shutdown literature — do not add new bash code for these)
   have; note as a future improvement.
 - **proxmox-guardian patterns** (https://github.com/Guilhem-Bonnet/proxmox-guardian): add
   tag-based VM role discovery as a third path alongside k8s API auto-discovery and explicit
-  VMID config — VMs tagged `styx:k8s-worker` / `styx:k8s-cp` in Proxmox are picked up via the
+  VMID config — VMs tagged `styx.k8s-worker` / `styx.k8s-cp` in Proxmox are picked up via the
   cluster resources API already called during discovery, covering the case where the k8s API is
   unreachable but config lists are not maintained. Per-action error policy is covered by the
   `Policy` pattern in step 5 (emergency = warn-and-continue, maintenance = prompt); no

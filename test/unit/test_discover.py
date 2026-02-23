@@ -78,9 +78,9 @@ class TestParseClusterResources(unittest.TestCase):
         self.assertNotIn('200', vm_host)
 
     def test_parses_semicolon_separated_tags(self):
-        data = [self._vm(101, 'k8s', 'pve1', tags='styx:k8s-worker;production')]
+        data = [self._vm(101, 'k8s', 'pve1', tags='styx.k8s-worker;production')]
         _, _, vm_tags = parse_cluster_resources(data)
-        self.assertIn('styx:k8s-worker', vm_tags['101'])
+        self.assertIn('styx.k8s-worker', vm_tags['101'])
         self.assertIn('production', vm_tags['101'])
 
 
@@ -199,10 +199,10 @@ class TestClusterResourcesFixture(unittest.TestCase):
         self.assertEqual(self.vm_name['211'], 'k8s-worker-1')
 
     def test_k8s_cp_tag_parsed(self):
-        self.assertIn('styx:k8s-cp', self.vm_tags['201'])
+        self.assertIn('styx.k8s-cp', self.vm_tags['201'])
 
     def test_k8s_worker_tag_parsed(self):
-        self.assertIn('styx:k8s-worker', self.vm_tags['211'])
+        self.assertIn('styx.k8s-worker', self.vm_tags['211'])
 
     def test_extra_tags_preserved(self):
         self.assertIn('production', self.vm_tags['211'])

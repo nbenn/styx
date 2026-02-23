@@ -14,7 +14,7 @@
     "name": "k8s-worker-1",
     "node": "pve2",
     "status": "running",
-    "tags": "styx:k8s-worker",
+    "tags": "styx.k8s-worker",
     "template": 0,
     "type": "qemu",
     "vmid": 211
@@ -25,7 +25,7 @@
     "name": "k8s-worker-2",
     "node": "pve3",
     "status": "running",
-    "tags": "styx:k8s-worker",
+    "tags": "styx.k8s-worker",
     "template": 0,
     "type": "qemu",
     "vmid": 212

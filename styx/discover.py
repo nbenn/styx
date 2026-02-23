@@ -5,8 +5,8 @@ Pure parsing functions; no external calls or side effects.
 
 from dataclasses import dataclass, field
 
-WORKER_TAG = 'styx:k8s-worker'
-CP_TAG     = 'styx:k8s-cp'
+WORKER_TAG = 'styx.k8s-worker'
+CP_TAG     = 'styx.k8s-cp'
 
 
 @dataclass
@@ -90,6 +90,6 @@ def match_nodes_to_vms(vm_name, node_roles):
         raise ValueError(
             'No Kubernetes node names match any Proxmox VM name. '
             'Provide workers/control_plane VMIDs in [kubernetes] config, '
-            'or tag VMs with styx:k8s-worker / styx:k8s-cp.'
+            'or tag VMs with styx.k8s-worker / styx.k8s-cp.'
         )
     return workers, cp
