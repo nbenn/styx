@@ -1,0 +1,33 @@
+# styx.conf — Example configuration file
+# All sections are optional. Styx auto-discovers everything for standard setups.
+# Copy to /etc/styx/styx.conf and uncomment only what you need to override.
+
+# Override auto-discovered hosts (pvesh get /cluster/status).
+# Useful when SSH IPs differ from corosync IPs.
+#[hosts]
+#pve1 = 192.168.1.10
+#pve2 = 192.168.1.11
+#pve3 = 192.168.1.12
+
+# Override auto-discovered orchestrator (local == 1 from pvesh).
+# Default: the host where styx is running.
+#[orchestrator]
+#host = pve1
+
+# Override Kubernetes node classification.
+# Required if Kubernetes node names don't match Proxmox VM names.
+# Default kubeconfig: /root/.kube/config
+#[kubernetes]
+#kubeconfig = /etc/styx/kubeconfig
+#workers = 211, 212, 213, 214, 215
+#control_plane = 201, 202, 203
+
+# Override Ceph detection (pveceph status) and OSD flags.
+#[ceph]
+#enabled = true
+#flags = noout, norecover, norebalance, nobackfill, nodown, noup
+
+# Override default timeouts (all values in seconds).
+#[timeouts]
+#drain = 120   # Max time for kubectl drain per node
+#vm = 120      # Max time for VM graceful shutdown before force-kill

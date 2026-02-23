@@ -1,0 +1,19 @@
+{
+  "name": "Styx",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "remoteUser": "dev",
+  "workspaceFolder": "/workspace",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=cached",
+  "mounts": [
+    "source=${localWorkspaceFolder}/.devcontainer/.claude.local,target=/workspace/.claude,type=bind,consistency=cached"
+  ],
+  "runArgs": ["--env-file", ".devcontainer/.env"],
+  "initializeCommand": "mkdir -p .devcontainer/.claude.local",
+  "postCreateCommand": {
+    "claude": "rm -rf /home/dev/.claude && ln -sf /workspace/.claude /home/dev/.claude && ln -sf /home/dev/.claude/claude.json /home/dev/.claude.json",
+    "gitconfig": "test -f /workspace/.devcontainer/gitconfig && ln -sf /workspace/.devcontainer/gitconfig /home/dev/.gitconfig || true"
+  }
+}

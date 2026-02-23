@@ -1,0 +1,5 @@
+.devcontainer/.env
+.devcontainer/.claude.local/
+.devcontainer/.gitconfig.local
+.devcontainer/.bashrc.local
+.claude

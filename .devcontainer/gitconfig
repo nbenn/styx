@@ -1,0 +1,11 @@
+[init]
+    defaultBranch = main
+
+[core]
+	excludesFile = /workspace/.devcontainer/gitignore
+
+[include]
+	path = /workspace/.devcontainer/.gitconfig.local
+
+[credential]
+	helper = cache

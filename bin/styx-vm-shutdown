@@ -1,0 +1,53 @@
+#!/bin/bash
+# styx-vm-shutdown — Quorum-free VM shutdown via QMP + PID
+set -euo pipefail
+
+VMID=${1:?Usage: styx-vm-shutdown <vmid> [timeout]}
+TIMEOUT=${2:-120}
+
+QMP="/var/run/qemu-server/${VMID}.qmp"
+PIDFILE="/var/run/qemu-server/${VMID}.pid"
+
+# Check if VM is running
+if [[ ! -f "$PIDFILE" ]] || ! kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+  echo "VM ${VMID} is not running"
+  exit 0
+fi
+
+# Send ACPI power button via QMP (system_powerdown).
+# QMP requires qmp_capabilities before any command. Sleep gives QEMU time
+# to process capabilities before the command arrives.
+echo "VM ${VMID}: sending ACPI powerdown via QMP"
+{ printf '{"execute":"qmp_capabilities"}\n'
+  sleep 0.3
+  printf '{"execute":"system_powerdown"}\n'
+} | socat -t 3 - UNIX-CONNECT:"${QMP}" >/dev/null 2>&1 || true
+
+# Poll PID until stopped or timeout
+count=0
+while [[ $count -lt $TIMEOUT ]]; do
+  if ! kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; then
+    echo "VM ${VMID} stopped gracefully"
+    exit 0
+  fi
+  sleep 1
+  count=$((count + 1))
+done
+
+# Escalate: SIGTERM
+echo "VM ${VMID} timeout after ${TIMEOUT}s, sending SIGTERM"
+kill -15 "$(cat "$PIDFILE")" 2>/dev/null || true
+count=0
+while [[ $count -lt 10 ]]; do
+  if ! kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; then
+    echo "VM ${VMID} stopped after SIGTERM"
+    exit 0
+  fi
+  sleep 1
+  count=$((count + 1))
+done
+
+# Last resort: SIGKILL
+echo "VM ${VMID} still running, sending SIGKILL"
+kill -9 "$(cat "$PIDFILE")" 2>/dev/null || true
+echo "VM ${VMID} force-killed"
