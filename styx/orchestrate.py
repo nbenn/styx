@@ -358,7 +358,8 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None):
             if host != topo.orchestrator:
                 try:
                     policy.execute(f'push_executable {host}', ops.push_executable, host)
-                    log(f'Deployed styx to {host}')
+                    if not policy.dry_run:
+                        log(f'Deployed styx to {host}')
                 except Exception as e:
                     policy.on_warning(f'Failed to deploy styx to {host}: {e}')
 
