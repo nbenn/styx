@@ -26,13 +26,24 @@ Phases 1 and 2 run concurrently as two parallel tracks. VM shutdowns use the QEM
 
 ## Installation
 
-Download the latest `styx.pyz` release artifact and place it on shared Proxmox snippets storage (NFS or CephFS with `content snippets`). The file is then available at the same path on every node without per-node installation.
+Download the latest `styx.pyz` release artifact and place it on a shared Proxmox snippets storage pool (NFS or CephFS configured with `content snippets`). Because the storage is shared, the file is available at the same path on every node without per-node installation.
+
+First, find the path of your shared snippets storage:
 
 ```bash
-# Download
+# List storage pools that have snippets content enabled
+pvesm status --content snippets
+# Then find the mount path for the shared pool you want to use:
+pvesm path <storage-name>
+```
+
+Then download the artifact into that directory:
+
+```bash
+SNIPPETS=/path/to/your/snippets   # e.g. /mnt/pve/cephfs/snippets
 curl -L https://github.com/nbenn/styx/releases/latest/download/styx.pyz \
-    -o /var/lib/vz/snippets/styx.pyz
-chmod +x /var/lib/vz/snippets/styx.pyz
+    -o "${SNIPPETS}/styx.pyz"
+chmod +x "${SNIPPETS}/styx.pyz"
 
 # Optional: copy config if you need to override auto-discovery
 cp styx.conf.example /etc/styx/styx.conf
@@ -116,7 +127,7 @@ See [`styx.conf.example`](styx.conf.example) for the full reference.
 
 Styx is a command, not a daemon. Wire it to your trigger of choice:
 
-- **NUT** (Network UPS Tools): add `SHUTDOWNCMD "/var/lib/vz/snippets/styx.pyz orchestrate"` to `upsmon.conf`
+- **NUT** (Network UPS Tools): add `SHUTDOWNCMD "/path/to/snippets/styx.pyz orchestrate"` to `upsmon.conf`
 - **Manual**: run `styx.pyz orchestrate` directly on the orchestrator
 - **Cron/systemd**: call from a shutdown script
 

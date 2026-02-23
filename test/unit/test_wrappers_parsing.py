@@ -2,9 +2,12 @@
 
 import sys
 import unittest
-from unittest.mock import patch
+from unittest.mock import mock_open, patch
 
-from styx.wrappers import _parse_ha_status, _parse_running_vmids, _styx_cmd, Operations
+from styx.wrappers import (
+    _parse_ha_status, _parse_running_vmids, _styx_cmd, _local_pyz,
+    _REMOTE_PYZ, Operations,
+)
 
 
 # ── _parse_ha_status ──────────────────────────────────────────────────────────
@@ -140,28 +143,61 @@ class TestStyxCmd(unittest.TestCase):
 
 class TestOperationsShutdownVmCmd(unittest.TestCase):
 
-    def _ops(self):
-        return Operations({'pve1': '10.0.0.1'}, 'pve1')
-
-    def test_shutdown_vm_uses_pyz_path_as_zipapp(self):
-        ops = self._ops()
-        with patch.object(sys, 'argv', ['/var/lib/vz/snippets/styx.pyz']):
+    def test_shutdown_vm_orchestrator_uses_local_pyz(self):
+        ops = Operations({'pve1': '10.0.0.1'}, 'pve1')
+        with patch.object(sys, 'argv', ['/mnt/pve/shared/snippets/styx.pyz']):
             with patch.object(ops, 'run_on_host') as mock_run:
                 ops.shutdown_vm('pve1', '101', 120)
         mock_run.assert_called_once_with(
             'pve1',
-            'nohup python3 /var/lib/vz/snippets/styx.pyz vm-shutdown 101 120 </dev/null >/dev/null 2>&1 &',
+            'nohup python3 /mnt/pve/shared/snippets/styx.pyz vm-shutdown 101 120 </dev/null >/dev/null 2>&1 &',
+        )
+
+    def test_shutdown_vm_peer_uses_remote_pyz(self):
+        ops = Operations({'pve1': '10.0.0.1', 'pve2': '10.0.0.2'}, 'pve1')
+        with patch.object(sys, 'argv', ['/mnt/pve/shared/snippets/styx.pyz']):
+            with patch.object(ops, 'run_on_host') as mock_run:
+                ops.shutdown_vm('pve2', '102', 120)
+        mock_run.assert_called_once_with(
+            'pve2',
+            f'nohup python3 {_REMOTE_PYZ} vm-shutdown 102 120 </dev/null >/dev/null 2>&1 &',
         )
 
     def test_shutdown_vm_uses_module_from_source(self):
-        ops = self._ops()
+        ops = Operations({'pve1': '10.0.0.1', 'pve2': '10.0.0.2'}, 'pve1')
         with patch.object(sys, 'argv', ['styx/__main__.py']):
             with patch.object(ops, 'run_on_host') as mock_run:
-                ops.shutdown_vm('pve1', '101', 120)
+                ops.shutdown_vm('pve2', '102', 120)
         mock_run.assert_called_once_with(
-            'pve1',
-            'nohup python3 -m styx vm-shutdown 101 120 </dev/null >/dev/null 2>&1 &',
+            'pve2',
+            'nohup python3 -m styx vm-shutdown 102 120 </dev/null >/dev/null 2>&1 &',
         )
+
+
+# ── Operations.push_executable ────────────────────────────────────────────────
+
+class TestPushExecutable(unittest.TestCase):
+
+    def test_push_pipes_pyz_to_peer_via_ssh(self):
+        ops = Operations({'pve1': '10.0.0.1', 'pve2': '10.0.0.2'}, 'pve1')
+        fake_data = mock_open(read_data=b'zipdata')
+        with patch.object(sys, 'argv', ['/mnt/pve/shared/snippets/styx.pyz']):
+            with patch('subprocess.run') as mock_run:
+                with patch('builtins.open', fake_data):
+                    ops.push_executable('pve2')
+        mock_run.assert_called_once()
+        cmd = mock_run.call_args[0][0]
+        self.assertEqual(cmd[0], 'ssh')
+        self.assertIn('root@10.0.0.2', cmd)
+        self.assertIn(f'cat > {_REMOTE_PYZ}', cmd[-1])
+        self.assertTrue(mock_run.call_args[1].get('check'))
+
+    def test_push_noop_in_dev_mode(self):
+        ops = Operations({'pve1': '10.0.0.1', 'pve2': '10.0.0.2'}, 'pve1')
+        with patch.object(sys, 'argv', ['styx/__main__.py']):
+            with patch('subprocess.run') as mock_run:
+                ops.push_executable('pve2')
+        mock_run.assert_not_called()
 
 
 if __name__ == '__main__':

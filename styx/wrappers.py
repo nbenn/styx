@@ -15,19 +15,24 @@ from styx.policy import log
 _HA_TRANSITION_TIMEOUT = 30
 
 
+_REMOTE_PYZ = '/tmp/styx-deploy.pyz'
+
+
+def _local_pyz():
+    """Return sys.argv[0] if running as a zipapp, else None."""
+    argv0 = sys.argv[0] if sys.argv else ''
+    return argv0 if argv0.endswith('.pyz') else None
+
+
 def _styx_cmd():
     """Return the invocation prefix for styx subcommands run in subprocesses.
 
     When running as a zipapp (sys.argv[0] ends with .pyz), the zipapp path is
-    passed directly to python3 — subprocesses on any Proxmox node can find it
-    via the shared snippets storage path without any PYTHONPATH configuration.
-
-    Falls back to 'python3 -m styx' for development / source installs.
+    passed directly to python3.  Falls back to 'python3 -m styx' for
+    development / source installs.
     """
-    argv0 = sys.argv[0] if sys.argv else ''
-    if argv0.endswith('.pyz'):
-        return f'python3 {argv0}'
-    return 'python3 -m styx'
+    pyz = _local_pyz()
+    return f'python3 {pyz}' if pyz else 'python3 -m styx'
 
 
 def _parse_ha_status(output):
@@ -81,8 +86,31 @@ class Operations:
 
     # ── VM lifecycle ──────────────────────────────────────────────────────────
 
+    def push_executable(self, host):
+        """Copy the running .pyz to host via SSH stdin pipe.
+
+        No-op in dev/source mode (when not running as a zipapp).
+        """
+        pyz = _local_pyz()
+        if pyz is None:
+            return
+        ip = self._host_ips[host]
+        with open(pyz, 'rb') as f:
+            subprocess.run(
+                ['ssh', '-o', 'ConnectTimeout=5', '-o', 'BatchMode=yes',
+                 f'root@{ip}', f'cat > {_REMOTE_PYZ}'],
+                stdin=f, check=True, timeout=60,
+            )
+
     def shutdown_vm(self, host, vmid, timeout):
-        cmd = f'{_styx_cmd()} vm-shutdown {vmid} {timeout}'
+        # Peers get the pre-deployed local copy; orchestrator uses _styx_cmd()
+        # (which points at shared storage, safe since it runs first and imports
+        # everything before CephFS can lose quorum).
+        if _local_pyz() and host != self._orchestrator:
+            prefix = f'python3 {_REMOTE_PYZ}'
+        else:
+            prefix = _styx_cmd()
+        cmd = f'{prefix} vm-shutdown {vmid} {timeout}'
         try:
             self.run_on_host(host, f'nohup {cmd} </dev/null >/dev/null 2>&1 &')
         except Exception as e:

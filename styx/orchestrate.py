@@ -18,7 +18,7 @@ from styx.discover import (
     match_nodes_to_vms,
 )
 from styx.policy import Policy, DryRunPolicy, MaintenancePolicy, log, setup_log_file
-from styx.wrappers import Operations
+from styx.wrappers import Operations, _local_pyz
 
 
 # ── external CLI helpers ──────────────────────────────────────────────────────
@@ -350,6 +350,17 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None):
             except Exception as e:
                 policy.on_warning(f'Failed to create k8s client: {e}')
         ops = Operations(topo.host_ips, topo.orchestrator, k8s)
+
+    # Deploy executable to peer hosts so vm-shutdown doesn't depend on CephFS
+    if _local_pyz():
+        log('--- Deploying styx to peer hosts ---')
+        for host in topo.host_ips:
+            if host != topo.orchestrator:
+                try:
+                    policy.execute(f'push_executable {host}', ops.push_executable, host)
+                    log(f'Deployed styx to {host}')
+                except Exception as e:
+                    policy.on_warning(f'Failed to deploy styx to {host}: {e}')
 
     # Cordon all k8s nodes (idempotent)
     if topo.k8s_enabled:
