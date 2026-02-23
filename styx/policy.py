@@ -19,7 +19,9 @@ def setup_log_file(path):
     """Open path in append mode; subsequent log() calls tee there."""
     global _log_fh
     import atexit, os
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    dirname = os.path.dirname(path)
+    if dirname:
+        os.makedirs(dirname, exist_ok=True)
     if _log_fh is not None:
         _log_fh.close()
     _log_fh = open(path, 'a', buffering=1)   # line-buffered

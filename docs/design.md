@@ -159,7 +159,7 @@ All sections are optional. SSH must be set up between all Proxmox hosts (root, k
 /etc/styx/styx.conf                # Configuration (optional, overrides auto-discovery)
 ```
 
-`styx.pyz` is a Python zipapp (stdlib `zipapp` module, Python 3.5+). It bundles the entire `styx/` package in a single executable file and is placed on shared Proxmox snippets storage (NFS or CephFS with `content snippets`) so every node can run it from the same path without per-node installation.
+`styx.pyz` is a Python zipapp (stdlib `zipapp` module, Python 3.6+). It bundles the entire `styx/` package in a single executable file and is placed on shared Proxmox snippets storage (NFS or CephFS with `content snippets`) so every node can run it from the same path without per-node installation.
 
 Both subcommands are available from the single file:
 - `styx.pyz orchestrate` — main shutdown sequence (orchestrator only)
@@ -210,7 +210,7 @@ A dedicated ServiceAccount with minimal permissions for drain operations. A long
 - `nodes`: `get`, `list`, `patch` (for cordon/uncordon)
 - `pods`: `get`, `list` (to discover pods on a node)
 - `pods/eviction`: `create` (to evict pods during drain)
-- `daemonsets`: `get`, `list` (for `--ignore-daemonsets`)
+- `volumeattachments` (storage.k8s.io/v1): `get`, `list` (to detect stale CSI attachments post-drain)
 
 ## Shutdown Sequence
 
@@ -268,8 +268,8 @@ Time ->
 
 STARTUP:
   auto-discover:      [pvesh cluster/status + cluster/resources, kubectl get nodes, pveceph status]
-  disable HA:         [ha-manager set ... --state disabled]  (phase >= 2 only)
-  cordon all k8s:     [kubectl cordon] (instant, prevents rescheduling)
+  cordon all k8s:     [kubectl cordon] (instant, prevents rescheduling before HA is disabled)
+  disable HA:         [ha-manager set ... --state disabled]  (k8s scope for phase 1; all for phase 2+)
 
 PARALLEL TRACKS (phases 1+2 run concurrently):
   Track A (k8s):
@@ -296,13 +296,13 @@ UNIFIED POLLING LOOP (after all shutdown commands issued):
 
 | Flag | Startup | Track A (k8s) | Track B (non-k8s) | Ceph flags | Polling loop | Post-loop |
 |------|---------|---------------|-------------------|------------|--------------|-----------|
-| `--phase 1` | cordon | drain + shutdown k8s VMs | skip | skip | skip | skip |
-| `--phase 2` | disable HA, cordon | drain + shutdown k8s VMs | shutdown non-k8s VMs | skip | poll, wait for all VMs | skip |
-| `--phase 3` (default) | disable HA, cordon | drain + shutdown k8s VMs | shutdown non-k8s VMs | set flags | poll, **poweroff hosts** | poweroff orchestrator |
+| `--phase 1` | disable HA (k8s scope), cordon | drain + shutdown k8s VMs | skip | skip | skip | skip |
+| `--phase 2` | disable HA (all), cordon | drain + shutdown k8s VMs | shutdown non-k8s VMs | skip | poll, wait for all VMs | skip |
+| `--phase 3` (default) | disable HA (all), cordon | drain + shutdown k8s VMs | shutdown non-k8s VMs | set flags | poll, **poweroff hosts** | poweroff orchestrator |
 
 Notes:
-- Phase 1 issues `styx-vm-shutdown` for k8s VMs (fire-and-forget). Does **not** wait for them to stop. HA is disabled only for k8s VMIDs (scoped, since phase 1 doesn't touch other VMs).
-- Phase 2 adds HA disable, non-k8s VMs, and the polling loop.
+- Phase 1 issues `styx-vm-shutdown` for k8s VMs (fire-and-forget). Does **not** wait for them to stop. HA is disabled for k8s VMIDs only — non-k8s VMs are not touched in phase 1 so their HA resources are left alone.
+- Phase 2 widens HA disable to all resources, adds non-k8s VMs, and the polling loop.
 - Phase 3 adds Ceph flags and host poweroff.
 - Cordon always runs regardless of phase (idempotent prerequisite).
 - If `[kubernetes]` is not configured, track A is skipped entirely.
@@ -328,7 +328,8 @@ Some VMs may have Proxmox HA enabled. HA must be disabled before shutdown to pre
 
 - Auto-detected at startup via `ha-manager status`
 - Each HA-managed resource disabled individually: `ha-manager set <sid> --state disabled`
-- Only runs for phase >= 2 (phase 1 only affects k8s VMs, which are typically not HA-managed)
+- Phase 1: scoped to k8s VMIDs only (`ha-manager set vm:<vmid> --state disabled` for each k8s worker/CP)
+- Phase 2+: all HA-managed resources disabled regardless of VM type
 - Both `ha-manager` and `pvesh` require quorum, but run at startup before any host is powered off
 
 ### Quorum Considerations

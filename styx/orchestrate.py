@@ -50,7 +50,7 @@ def _make_k8s_client(config):
 
 # ── discovery ─────────────────────────────────────────────────────────────────
 
-def discover(config, *, _pvesh_fn=None, _pveceph_fn=None):
+def discover(config, *, _pvesh_fn=None, _pveceph_fn=None, _on_warning=None):
     """Build ClusterTopology from config + live cluster API calls.
 
     _pvesh_fn and _pveceph_fn are injectable for testing.
@@ -92,6 +92,9 @@ def discover(config, *, _pvesh_fn=None, _pveceph_fn=None):
             topo.k8s_enabled = True
             log(f'Kubernetes: API discovery '
                 f'(workers={topo.k8s_workers} cp={topo.k8s_cp})')
+        except ValueError as e:
+            (_on_warning or log)(f'Kubernetes node/VM name mismatch: {e}')
+            topo.k8s_enabled = False
         except Exception as e:
             log(f'Kubernetes API unreachable ({e}) — skipping k8s')
             topo.k8s_enabled = False
@@ -324,8 +327,10 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None):
     log('=' * 40)
     log(f'Mode: {args.mode}, Phase: {args.phase}')
 
-    _disc = _discover_fn or discover
-    topo  = _disc(config)
+    if _discover_fn is not None:
+        topo = _discover_fn(config)
+    else:
+        topo = discover(config, _on_warning=policy.on_warning)
 
     if args.mode == 'maintenance':
         preflight(topo, config)
@@ -381,7 +386,8 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None):
 
     do_poweroff = should_poweroff_hosts(args.phase)
     if do_poweroff:
-        policy.phase_gate('VM shutdown tracks complete — about to set Ceph flags and power off all hosts. Proceed?')
+        ceph_note = ', set Ceph flags' if topo.ceph_enabled else ''
+        policy.phase_gate(f'VM shutdown tracks complete — about to{ceph_note} power off all hosts. Proceed?')
 
     # Ceph flags (phase 3 only, before polling loop)
     if should_set_ceph_flags(args.phase) and topo.ceph_enabled:

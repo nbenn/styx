@@ -4,6 +4,7 @@ Inject a subclass or mock in tests to avoid real SSH / CLI calls.
 """
 
 import subprocess
+import sys
 import time
 
 from styx.policy import log
@@ -12,6 +13,21 @@ from styx.policy import log
 # calling ha-manager set. Always times out with a warning rather than
 # stalling the sequence.
 _HA_TRANSITION_TIMEOUT = 30
+
+
+def _styx_cmd():
+    """Return the invocation prefix for styx subcommands run in subprocesses.
+
+    When running as a zipapp (sys.argv[0] ends with .pyz), the zipapp path is
+    passed directly to python3 — subprocesses on any Proxmox node can find it
+    via the shared snippets storage path without any PYTHONPATH configuration.
+
+    Falls back to 'python3 -m styx' for development / source installs.
+    """
+    argv0 = sys.argv[0] if sys.argv else ''
+    if argv0.endswith('.pyz'):
+        return f'python3 {argv0}'
+    return 'python3 -m styx'
 
 
 def _parse_ha_status(output):
@@ -39,7 +55,7 @@ class Operations:
 
     def run_on_host(self, host, cmd):
         if host == self._orchestrator:
-            r = subprocess.run(['bash', '-c', cmd], capture_output=True, text=True)
+            r = subprocess.run(['bash', '-c', cmd], capture_output=True, text=True, timeout=30)
         else:
             ip = self._host_ips[host]
             r  = subprocess.run(
@@ -66,8 +82,9 @@ class Operations:
     # ── VM lifecycle ──────────────────────────────────────────────────────────
 
     def shutdown_vm(self, host, vmid, timeout):
+        cmd = f'{_styx_cmd()} vm-shutdown {vmid} {timeout}'
         try:
-            self.run_on_host(host, f'python3 -m styx vm-shutdown {vmid} {timeout}')
+            self.run_on_host(host, f'nohup {cmd} </dev/null >/dev/null 2>&1 &')
         except Exception as e:
             log(f'WARNING: shutdown_vm {vmid} on {host}: {e}')
 

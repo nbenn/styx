@@ -148,6 +148,19 @@ class TestDiscoverKubernetes(unittest.TestCase):
             topo = discover(cfg, _pvesh_fn=_pvesh, _pveceph_fn=lambda: False)
         self.assertFalse(topo.k8s_enabled)
 
+    def test_k8s_name_mismatch_calls_on_warning_not_api_unreachable(self):
+        """ValueError from match_nodes_to_vms routes to _on_warning, not 'API unreachable'."""
+        fake_k8s = mock.MagicMock()
+        fake_k8s.get_node_roles.return_value = [('no-such-vm-name', 'worker')]
+        cfg = _cfg(k8s_server='https://k8s.example.com', k8s_token='/var/run/token')
+        warnings = []
+        with mock.patch('styx.orchestrate._make_k8s_client', return_value=fake_k8s):
+            topo = discover(cfg, _pvesh_fn=_pvesh, _pveceph_fn=lambda: False,
+                            _on_warning=warnings.append)
+        self.assertFalse(topo.k8s_enabled)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn('mismatch', warnings[0].lower())
+
     def test_k8s_no_credentials_skips_api(self):
         """Neither k8s_server nor k8s_token → k8s_enabled=False, no API call."""
         with mock.patch('styx.orchestrate._make_k8s_client') as mk:
