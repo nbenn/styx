@@ -153,10 +153,17 @@ All sections are optional. SSH must be set up between all Proxmox hosts (root, k
 ### File Layout
 
 ```
-/usr/local/bin/styx                # Main shutdown script (orchestrator only)
-/usr/local/bin/styx-vm-shutdown    # VM shutdown helper (all Proxmox hosts)
+/var/lib/vz/snippets/styx.pyz      # Self-contained executable (all Proxmox hosts, via shared storage)
 /etc/styx/styx.conf                # Configuration (optional, overrides auto-discovery)
 ```
+
+`styx.pyz` is a Python zipapp (stdlib `zipapp` module, Python 3.5+). It bundles the entire `styx/` package in a single executable file and is placed on shared Proxmox snippets storage (NFS or CephFS with `content snippets`) so every node can run it from the same path without per-node installation.
+
+Both subcommands are available from the single file:
+- `styx.pyz orchestrate` — main shutdown sequence (orchestrator only)
+- `styx.pyz vm-shutdown <vmid> [timeout]` — VM shutdown helper (all hosts)
+
+Built with `bash scripts/build.sh`. Published as a GitHub release artifact on version tags via `.github/workflows/release.yml`.
 
 ## Components
 
@@ -176,10 +183,9 @@ Deployed on **all** Proxmox hosts. Shuts down a single VM using direct QMP socke
 
 **Usage:**
 ```bash
-styx-vm-shutdown <vmid> [timeout]    # default timeout: 120s
+styx.pyz vm-shutdown <vmid> [timeout]    # default timeout: 120s
 ```
 
-`bin/styx-vm-shutdown` is a thin shell wrapper around `python3 -m styx vm-shutdown`.
 The implementation lives in `styx/vm_shutdown.py`. It uses Python's `socket.AF_UNIX`
 directly — no `socat` dependency.
 
@@ -209,13 +215,37 @@ A dedicated ServiceAccount with minimal permissions for drain operations. A long
 ### Command Line
 
 ```
-styx [options]
+styx.pyz orchestrate [--mode <mode>] [--phase <1|2|3>] [--config <path>]
 
-Options:
-  --dry-run        Log all actions without executing them
+  --mode <mode>    dry-run | emergency | maintenance  (default: emergency)
   --phase <1|2|3>  Execute up to and including this phase (default: 3)
   --config <path>  Config file path (default: /etc/styx/styx.conf)
 ```
+
+### Modes
+
+Three mutually exclusive modes, implemented as three `Policy` subclasses in `styx/policy.py`:
+
+| Mode | Class | Behaviour |
+|------|-------|-----------|
+| `emergency` | `Policy` | Execute automatically; `on_warning()` logs and continues; `phase_gate()` is a no-op. Default — designed for unattended UPS-triggered shutdowns. |
+| `maintenance` | `MaintenancePolicy` | Pre-flight checks before any action; `on_warning()` prompts `[skip/abort]`; `phase_gate()` requires explicit confirmation before proceeding. Designed for planned maintenance. |
+| `dry-run` | `DryRunPolicy` | `execute()` logs `[dry-run] <description>` and returns `None` without calling the function. All other behaviour is identical to emergency. |
+
+**Maintenance mode detail:**
+
+Before touching anything, `preflight()` runs and logs:
+- SSH reachability to every non-orchestrator host
+- Kubernetes API status + per-node drainable pod count (drain load estimate)
+- Ceph health (`ceph health`)
+
+Two phase gates prompt for confirmation:
+1. After discovery + pre-flight: "N hosts, M VMs … proceed with shutdown?"
+2. Before phase-3 powerdown: "about to set Ceph flags and power off all hosts — proceed?"
+
+Any `on_warning()` call during execution (drain timeout, stale VolumeAttachment, SSH error) pauses and prompts `[skip/abort]`. A `threading.Lock` serialises concurrent prompts from parallel drain threads.
+
+Both modes run **identical code paths**. `Policy.phase_gate()` and `Policy.on_warning()` are no-ops in emergency mode. This is intentional — maintenance mode is the primary way to exercise the emergency path against a real cluster.
 
 ### Phases
 
@@ -348,7 +378,7 @@ All significant actions are logged with timestamps to both stdout and `/var/log/
 - Errors and fallbacks (QGA unavailable, SSH timeout, drain timeout)
 - Phase transitions and completion
 
-Implementation: `styx/policy.py` provides a `log()` function that writes `[ISO-timestamp] msg` to both stdout and the log file in append mode. The log file is opened once at startup via `setup_log_file(path)`. Path defaults to `/var/log/styx.log`; override with the `LOG_FILE` environment variable.
+Implementation: `styx/policy.py` provides a module-level `log()` function that writes `[ISO-timestamp] msg` to both stdout and the log file in append mode. The log file is opened once at startup via `setup_log_file(path)`. Path defaults to `/var/log/styx.log`; override with the `LOG_FILE` environment variable. All three policy classes share the same `log()` function.
 
 The primary use case is post-mortem analysis after a UPS-triggered shutdown. When called interactively, stdout provides the same output.
 
@@ -407,35 +437,44 @@ Tests are written in Python `unittest` — no external test frameworks required.
 
 ```
 styx/
-├── bin/
-│   ├── styx                          # thin wrapper: python3 -m styx orchestrate
-│   └── styx-vm-shutdown              # thin wrapper: python3 -m styx vm-shutdown
-├── styx/
-│   ├── __main__.py                   # CLI dispatch (orchestrate | vm-shutdown)
-│   ├── policy.py                     # Policy class (dry-run, on_warning, log)
-│   ├── config.py                     # StyxConfig dataclass + INI parser
-│   ├── discover.py                   # pure parsing functions + ClusterTopology
-│   ├── classify.py                   # VMID classification (k8s-worker/cp/other)
-│   ├── decide.py                     # phase predicates (should_disable_ha, etc.)
-│   ├── k8s.py                        # K8sClient (cordon, drain, list nodes, etc.)
-│   ├── vm_shutdown.py                # QMP + PID escalation (no socat)
-│   ├── wrappers.py                   # Operations class (all external calls)
-│   └── orchestrate.py                # main shutdown sequence
-├── test/
-│   ├── unit/
-│   │   ├── test_config.py            # INI parsing
-│   │   ├── test_discover.py          # pvesh/kubectl JSON parsing, name matching
-│   │   ├── test_classify.py          # VMID classification
-│   │   ├── test_decide.py            # phase predicates
-│   │   └── test_k8s.py               # K8sClient (cordon, drain, mirror pods, etc.)
-│   └── integration/
-│       ├── helpers.py                # FakeOperations + fake VM (sleep + PID files)
-│       └── test_full_sequence.py     # end-to-end with injected fakes
-├── .github/workflows/
-│   └── test.yml                      # CI: python3 -m unittest discover
-├── docs/
-│   └── design.md
-└── README.md
+├── __main__.py                       # CLI dispatch (orchestrate | vm-shutdown)
+├── policy.py                         # DryRunPolicy, Policy, MaintenancePolicy + log()
+├── config.py                         # StyxConfig dataclass + INI parser
+├── discover.py                       # pure parsing functions + ClusterTopology
+├── classify.py                       # VMID classification (k8s-worker/cp/other)
+├── decide.py                         # phase predicates (should_disable_ha, etc.)
+├── k8s.py                            # K8sClient (cordon, drain, list nodes, etc.)
+├── vm_shutdown.py                    # QMP + PID escalation (no socat)
+├── wrappers.py                       # Operations class (all external calls)
+└── orchestrate.py                    # main shutdown sequence
+test/
+├── fixtures/
+│   ├── pvesh/                        # anonymised pvesh JSON responses
+│   │   ├── cluster_status.json
+│   │   ├── cluster_status_offline_node.json
+│   │   ├── cluster_resources.json
+│   │   └── cluster_resources_migration.json
+│   └── k8s/                          # anonymised kubectl JSON responses
+│       ├── nodes.json
+│       ├── nodes_single_node.json
+│       ├── nodes_dual_role.json
+│       ├── volume_attachments.json
+│       └── volume_attachments_stale.json
+├── unit/
+│   ├── test_config.py                # INI parsing
+│   ├── test_discover.py              # pvesh/kubectl JSON parsing, name matching
+│   ├── test_classify.py              # VMID classification
+│   ├── test_decide.py                # phase predicates
+│   ├── test_k8s.py                   # K8sClient (cordon, drain, mirror pods, etc.)
+│   └── test_policy.py                # DryRunPolicy, Policy, MaintenancePolicy
+└── integration/
+    ├── helpers.py                    # FakeOperations + fake VM (sleep + PID files)
+    └── test_full_sequence.py         # end-to-end with injected fakes
+scripts/
+└── build.sh                          # builds styx.pyz zipapp
+.github/workflows/
+├── test.yml                          # CI: unittest + coverage upload to Codecov
+└── release.yml                       # publishes styx.pyz on v* tags
 ```
 
 ### Layer Separation
@@ -487,9 +526,24 @@ ops.poweroff_self()                            # poweroff (orchestrator self)
 
 `main()` accepts `_discover_fn` and `_ops_factory` as keyword-only parameters for test injection.
 
+**Policy** (`styx/policy.py`):
+
+Three concrete classes implement the three modes. All share the module-level `log()` function.
+
+```python
+Policy()               # emergency: execute, warn-and-continue, no gates
+DryRunPolicy()         # dry-run:   log planned actions, skip execution (dry_run=True)
+MaintenancePolicy()    # maintenance: pre-flight, on_warning prompts, phase gates prompt
+```
+
+`policy.execute(description, fn, *args)` — calls `fn` in emergency/maintenance, skips in dry-run.
+`policy.on_warning(msg)` — logs in emergency/dry-run, prompts `[skip/abort]` in maintenance.
+`policy.phase_gate(summary)` — no-op in emergency/dry-run, prompts `[yes/abort]` in maintenance.
+`policy.dry_run` — `True` only for `DryRunPolicy`; used by `run_polling_loop` to skip poweroffs.
+
 ### Unit Tests
 
-Test layer-1 functions with synthetic data — no mocking needed.
+Test layer-1 functions with synthetic data — no mocking needed. Fixture-based tests load real anonymised API responses from `test/fixtures/` to guard against schema assumptions.
 
 ```python
 # test/unit/test_discover.py
@@ -511,6 +565,18 @@ def test_match_nodes_to_vms_raises_on_no_match(self):
 def test_mirror_pod_not_drainable(self):
     pod = _pod('kube-apiserver', mirror=True)
     self.assertFalse(K8sClient._drainable(pod))
+
+# test/unit/test_policy.py
+def test_dry_run_skips_execution(self):
+    called = []
+    DryRunPolicy().execute('op', called.append, 'x')
+    self.assertEqual(called, [])
+
+def test_maintenance_on_warning_abort_exits_1(self):
+    p = MaintenancePolicy(_input=lambda _: 'a')
+    with self.assertRaises(SystemExit) as cm:
+        p.on_warning('something failed')
+    self.assertEqual(cm.exception.code, 1)
 ```
 
 ### Integration Tests
@@ -525,40 +591,33 @@ def test_phase3_orchestrator_powers_off_last(self):
          _ops_factory=self._fake_ops)
     self.assertEqual(self.ops.poweroff_log[-1], 'POWEROFF_SELF')
 
-def test_dry_run_does_not_stop_vms(self):
-    main(['--dry-run', '--phase', '3', '--config', '/dev/null'],
+def test_dry_run_no_side_effects(self):
+    main(['--mode', 'dry-run', '--phase', '3', '--config', '/dev/null'],
          _discover_fn=self._fake_discover,
          _ops_factory=self._fake_ops)
     self.assertEqual(self.ops.shutdown_log, [])
+    self.assertEqual(self.ops.poweroff_log, [])
 ```
 
 ### CI
 
-```yaml
-name: Test
-on: [push, pull_request]
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install dependencies
-        run: sudo apt-get install -y python3
-      - name: Run unit tests
-        run: python3 -m unittest discover -s test/unit -p 'test_*.py' -v
-      - name: Run integration tests
-        run: python3 -m unittest discover -s test -p 'test_*.py' -v
-```
+`.github/workflows/test.yml` runs on every push and pull request:
+
+1. Run unit tests (fast feedback)
+2. Run full suite under `coverage run --source=styx`
+3. Generate `coverage.xml` and upload to Codecov via `codecov/codecov-action@v5`
+
+`.github/workflows/release.yml` triggers on `v*` tags, builds `styx.pyz` via `scripts/build.sh`, and publishes it as a GitHub release artifact.
 
 ### What's NOT Tested (requires real infrastructure)
 
 | Concern | Mitigation |
 |---------|------------|
-| QMP socket communication | Manual test on Proxmox, `--dry-run` |
-| kubectl drain behavior | `--dry-run --phase 1` on real cluster |
-| SSH connectivity | `--dry-run` shows SSH commands |
+| QMP socket communication | Manual test on Proxmox; `--mode dry-run` shows planned actions |
+| kubectl drain behavior | `--mode dry-run --phase 1` on real cluster |
+| SSH connectivity | `--mode maintenance` pre-flight checks SSH reachability |
 | Ceph OSD flag behavior | Idempotent, safe to test live |
-| ha-manager interaction | `--dry-run`, verify manually |
+| ha-manager interaction | `--mode dry-run`, verify manually |
 | Actual VM shutdown timing | Tune timeouts based on observation |
 
 ## Open Issues
