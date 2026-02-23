@@ -1,5 +1,6 @@
 # Styx
 
+[![CI](https://github.com/nbenn/styx/actions/workflows/test.yml/badge.svg)](https://github.com/nbenn/styx/actions/workflows/test.yml)
 [![codecov](https://codecov.io/gh/nbenn/styx/graph/badge.svg)](https://codecov.io/gh/nbenn/styx)
 
 Graceful cluster shutdown for Proxmox + Kubernetes + Ceph.
