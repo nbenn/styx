@@ -94,7 +94,7 @@ class TestZipappSmoke(unittest.TestCase):
             )
             from styx.config import load_config
             from styx.discover import ClusterTopology
-            from styx.wrappers import Operations, _styx_cmd, _local_pyz, _REMOTE_PYZ
+            from styx.wrappers import Operations, _styx_cmd, _local_pyz, _INSTALLED_PYZ
             from styx.k8s import K8sClient        # the one lazy import in real code
             from styx.orchestrate import discover, preflight
 

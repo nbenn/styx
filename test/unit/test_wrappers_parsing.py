@@ -2,11 +2,11 @@
 
 import sys
 import unittest
-from unittest.mock import mock_open, patch
+from unittest.mock import patch
 
 from styx.wrappers import (
     _parse_ha_status, _parse_running_vmids, _styx_cmd, _local_pyz,
-    _REMOTE_PYZ, _VM_LOG, Operations,
+    _INSTALLED_PYZ, _VM_LOG, Operations,
 )
 
 
@@ -162,7 +162,7 @@ class TestOperationsShutdownVmCmd(unittest.TestCase):
         log_file = _VM_LOG.format(vmid='102')
         mock_run.assert_called_once_with(
             'pve2',
-            f'nohup python3 {_REMOTE_PYZ} vm-shutdown 102 120 </dev/null >{log_file} 2>&1 &',
+            f'nohup python3 {_INSTALLED_PYZ} vm-shutdown 102 120 </dev/null >{log_file} 2>&1 &',
         )
 
     def test_shutdown_vm_uses_module_from_source(self):
@@ -198,7 +198,7 @@ class TestOperationsCheckVm(unittest.TestCase):
                 ops.check_vm('pve2', '211')
         mock_run.assert_called_once_with(
             'pve2',
-            f'python3 {_REMOTE_PYZ} vm-shutdown 211 --dry-run',
+            f'python3 {_INSTALLED_PYZ} vm-shutdown 211 --dry-run',
         )
 
     def test_check_vm_dev_mode_uses_module(self):
@@ -210,32 +210,6 @@ class TestOperationsCheckVm(unittest.TestCase):
             'pve2',
             'python3 -m styx vm-shutdown 211 --dry-run',
         )
-
-
-# ── Operations.push_executable ────────────────────────────────────────────────
-
-class TestPushExecutable(unittest.TestCase):
-
-    def test_push_pipes_pyz_to_peer_via_ssh(self):
-        ops = Operations({'pve1': '10.0.0.1', 'pve2': '10.0.0.2'}, 'pve1')
-        fake_data = mock_open(read_data=b'zipdata')
-        with patch.object(sys, 'argv', ['/mnt/pve/shared/snippets/styx.pyz']):
-            with patch('subprocess.run') as mock_run:
-                with patch('builtins.open', fake_data):
-                    ops.push_executable('pve2')
-        mock_run.assert_called_once()
-        cmd = mock_run.call_args[0][0]
-        self.assertEqual(cmd[0], 'ssh')
-        self.assertIn('root@10.0.0.2', cmd)
-        self.assertIn(f'cat > {_REMOTE_PYZ}', cmd[-1])
-        self.assertTrue(mock_run.call_args[1].get('check'))
-
-    def test_push_noop_in_dev_mode(self):
-        ops = Operations({'pve1': '10.0.0.1', 'pve2': '10.0.0.2'}, 'pve1')
-        with patch.object(sys, 'argv', ['styx/__main__.py']):
-            with patch('subprocess.run') as mock_run:
-                ops.push_executable('pve2')
-        mock_run.assert_not_called()
 
 
 if __name__ == '__main__':

@@ -33,30 +33,34 @@ Phase control (`--phase`):
 
 ## Installation
 
-Download the latest `styx.pyz` release artifact and place it on a shared Proxmox snippets storage pool (NFS or CephFS configured with `content snippets`). Because the storage is shared, the file is available at the same path on every node without per-node installation.
-
-First, find the path of your shared snippets storage:
+Run the install script on any cluster node to install `styx.pyz` at `/opt/styx/styx.pyz` on all nodes:
 
 ```bash
-# List storage pools that have snippets content enabled
-pvesm status --content snippets
-# Then find the mount path for the shared pool you want to use:
-pvesm path <storage-name>
+curl -fSL https://github.com/nbenn/styx/releases/latest/download/install.sh | bash
 ```
 
-Then download the artifact into that directory:
+Or download and run manually:
 
 ```bash
-SNIPPETS=/path/to/your/snippets   # e.g. /mnt/pve/cephfs/snippets
-curl -L https://github.com/nbenn/styx/releases/latest/download/styx.pyz \
-    -o "${SNIPPETS}/styx.pyz"
-chmod +x "${SNIPPETS}/styx.pyz"
+# Auto-discover nodes and install
+bash install.sh
 
-# Optional: copy config if you need to override auto-discovery
+# Use a local .pyz instead of downloading
+bash install.sh --pyz /path/to/styx.pyz
+
+# Explicit host list (skip auto-discovery)
+bash install.sh --hosts pve1 pve2 pve3
+```
+
+The script downloads the latest `styx.pyz` from GitHub releases, copies it to `/opt/styx/styx.pyz` on every node via SSH, and verifies each install. Re-run to upgrade.
+
+Optionally, copy a config file if you need to override auto-discovery:
+
+```bash
 cp styx.conf.example /etc/styx/styx.conf
 ```
 
-Both subcommands (`orchestrate` and `vm-shutdown`) are bundled in the single `styx.pyz` file and available on all nodes via the shared path.
+All subcommands (`orchestrate`, `vm-shutdown`, `local-shutdown`) are bundled in the single `styx.pyz` file.
 
 ## Usage
 
@@ -172,7 +176,7 @@ See [`styx.conf.example`](styx.conf.example) for the full reference.
 
 Styx is a command, not a daemon. Wire it to your trigger of choice:
 
-- **NUT** (Network UPS Tools): add `SHUTDOWNCMD "/path/to/snippets/styx.pyz orchestrate"` to `upsmon.conf`
+- **NUT** (Network UPS Tools): add `SHUTDOWNCMD "/opt/styx/styx.pyz orchestrate"` to `upsmon.conf`
 - **Manual**: run `styx.pyz orchestrate` directly on the orchestrator
 - **Cron/systemd**: call from a shutdown script
 

@@ -15,7 +15,7 @@ from styx.policy import log
 _HA_TRANSITION_TIMEOUT = 30
 
 
-_REMOTE_PYZ          = '/tmp/styx-deploy.pyz'
+_INSTALLED_PYZ       = '/opt/styx/styx.pyz'
 _VM_LOG              = '/tmp/styx-vm-{vmid}.log'
 _VM_LOG_GLOB         = '/tmp/styx-vm-*.log'
 _LOCAL_SHUTDOWN_LOG   = '/tmp/styx-local-shutdown.log'
@@ -89,26 +89,10 @@ class Operations:
 
     # ── VM lifecycle ──────────────────────────────────────────────────────────
 
-    def push_executable(self, host):
-        """Copy the running .pyz to host via SSH stdin pipe.
-
-        No-op in dev/source mode (when not running as a zipapp).
-        """
-        pyz = _local_pyz()
-        if pyz is None:
-            return
-        ip = self._host_ips[host]
-        with open(pyz, 'rb') as f:
-            subprocess.run(
-                ['ssh', '-o', 'ConnectTimeout=5', '-o', 'BatchMode=yes',
-                 f'root@{ip}', f'cat > {_REMOTE_PYZ}'],
-                stdin=f, check=True, timeout=60,
-            )
-
     def _vm_prefix(self, host):
         """Command prefix for running styx on host."""
         if _local_pyz() and host != self._orchestrator:
-            return f'python3 {_REMOTE_PYZ}'
+            return f'python3 {_INSTALLED_PYZ}'
         return _styx_cmd()
 
     def check_vm(self, host, vmid):

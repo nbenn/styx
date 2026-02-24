@@ -153,6 +153,7 @@ All sections are optional. SSH must be set up between all Proxmox hosts (root, k
 
 - **Proxmox cluster** with SSH between all hosts (root, key-based)
 - **python3** on **all** Proxmox hosts (standard on Proxmox 8+; used for orchestration and VM shutdown)
+- **styx installed** on all nodes via `scripts/install.sh` (installs to `/opt/styx/styx.pyz`)
 - **ceph** CLI on the orchestrator or a Ceph node (if using Ceph)
 - **`shutdown_policy = freeze`** in Proxmox `datacenter.cfg` (cluster-side): prevents HA from attempting to relocate VMs to surviving nodes during the shutdown window. Without this, HA may fight the shutdown sequence.
 - **kubelet `GracefulNodeShutdown`** (`shutdownGracePeriod` in kubelet config, node-side): ensures the kubelet participates in ACPI shutdown and terminates pods cleanly before the node powers off. This is a node-side prerequisite; styx has no visibility into it and does not configure it.
@@ -160,12 +161,11 @@ All sections are optional. SSH must be set up between all Proxmox hosts (root, k
 ### File Layout
 
 ```
-/var/lib/vz/snippets/styx.pyz      # Self-contained executable (shared storage; path varies by pool)
-/tmp/styx-deploy.pyz               # Per-run copy pushed to each peer via SSH before shutdown begins
+/opt/styx/styx.pyz                 # Self-contained executable (installed on every node)
 /etc/styx/styx.conf                # Configuration (optional, overrides auto-discovery)
 ```
 
-`styx.pyz` is a Python zipapp (stdlib `zipapp` module, Python 3.6+). It bundles the entire `styx/` package in a single executable file and is placed on shared Proxmox snippets storage (NFS or CephFS with `content snippets`) so every node can run it from the same path without per-node installation.
+`styx.pyz` is a Python zipapp (stdlib `zipapp` module, Python 3.6+). It bundles the entire `styx/` package in a single executable file. The install script (`scripts/install.sh`) copies it to `/opt/styx/styx.pyz` on every cluster node via SSH.
 
 All subcommands are available from the single file:
 - `styx.pyz orchestrate` — main shutdown sequence (orchestrator only)
@@ -305,7 +305,6 @@ Time ->
 STARTUP:
   auto-discover:      [pvesh cluster/status + cluster/resources, kubectl get nodes, pveceph status]
   hosts filter:       [_apply_hosts_filter(topo, --hosts)] (if --hosts specified; restricts topology)
-  push executable:    [ssh root@<peer-ip> 'cat > /tmp/styx-deploy.pyz'] (all peers; non-destructive)
 
 COORDINATED PHASE (leader, requires quorum/API):
   cordon all k8s:     [kubectl cordon] (instant, prevents rescheduling before HA is disabled)
@@ -577,10 +576,11 @@ test/
     ├── helpers.py                    # FakeOperations + fake VM (sleep + PID files)
     └── test_full_sequence.py         # end-to-end with injected fakes
 scripts/
-└── build.sh                          # builds styx.pyz zipapp
+├── build.sh                          # builds styx.pyz zipapp
+└── install.sh                        # installs styx.pyz on all cluster nodes
 .github/workflows/
 ├── test.yml                          # CI: unittest + coverage upload to Codecov
-└── release.yml                       # publishes styx.pyz on v* tags
+└── release.yml                       # publishes styx.pyz + install.sh on v* tags
 ```
 
 ### Layer Separation
@@ -616,7 +616,6 @@ should_set_ceph_flags(phase)          # -> bool
 ```python
 ops.run_on_host(host, cmd)                     # SSH or local bash
 ops.get_running_vmids(host)                    # scan PID files on a host
-ops.push_executable(host)                      # scp .pyz to peer via SSH stdin pipe; no-op in dev/source mode
 ops.check_vm(host, vmid)                       # vm-shutdown --dry-run (sync); used in dry-run mode
 ops.shutdown_vm(host, vmid, timeout)           # nohup styx vm-shutdown (fire-and-forget)
 ops.dispatch_local_shutdown(host, vmids, ...)  # nohup styx local-shutdown (one per host)

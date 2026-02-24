@@ -19,7 +19,7 @@ from styx.discover import (
 )
 from styx.config import DEFAULT_CEPH_FLAGS_PARTIAL
 from styx.policy import Policy, DryRunPolicy, MaintenancePolicy, log, setup_log_file
-from styx.wrappers import Operations, _local_pyz
+from styx.wrappers import Operations
 
 
 # ── external CLI helpers ──────────────────────────────────────────────────────
@@ -493,19 +493,6 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None):
             except Exception as e:
                 policy.on_warning(f'Failed to create k8s client: {e}')
         ops = Operations(topo.host_ips, topo.orchestrator, k8s)
-
-    # Deploy executable to peer hosts so local-shutdown doesn't depend on CephFS.
-    # Always runs (including dry-run) — copying a file is non-destructive, and
-    # dry-run needs the executable on peers to run vm-shutdown --dry-run.
-    if _local_pyz():
-        log('--- Deploying styx to peer hosts ---')
-        for host in topo.host_ips:
-            if host != topo.orchestrator:
-                try:
-                    ops.push_executable(host)
-                    log(f'Deployed styx to {host}')
-                except Exception as e:
-                    policy.on_warning(f'Failed to deploy styx to {host}: {e}')
 
     # ── COORDINATED PHASE ─────────────────────────────────────────────────
 

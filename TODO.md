@@ -60,28 +60,12 @@ phases:
 
 New subcommand: `styx local-shutdown <vmid>... --timeout N [--poweroff-delay S]`
 
-## 4. Install script instead of shared storage
+## ~~4. Install script instead of shared storage~~ (done)
 
-**Problem:** The current deployment model places `styx.pyz` on shared Proxmox
-snippets storage (NFS or CephFS). This introduces a dependency on the storage
-layer being healthy at the moment the tool is needed most. The `push_executable`
-fallback adds latency and failure modes during an emergency.
-
-**Goal:** Have the executable pre-installed at a fixed path on every node,
-with no runtime dependency on shared storage or file distribution.
-
-**Approach:**
-- Provide an install script that copies `styx.pyz` to a fixed path on every
-  cluster node via SSH. The path must be outside package-manager-managed
-  directories to survive Proxmox upgrades (e.g. `/opt/styx/styx.pyz` or
-  similar — needs investigation into what paths Proxmox upgrades leave
-  untouched).
-- The script should be re-runnable for upgrades (copy new version, done).
-- Remove the `push_executable` mechanism from the shutdown path — the
-  executable is already in place.
-- Remove the shared snippets storage requirement from the README.
-- The install script can discover cluster nodes the same way styx does
-  (`pvesh get /cluster/status`) or accept a list of hosts as arguments.
+Implemented. `scripts/install.sh` installs `styx.pyz` to `/opt/styx/styx.pyz`
+on all cluster nodes. The `push_executable` mechanism and shared snippets
+storage dependency have been removed. The install script is published as a
+release artifact alongside `styx.pyz`.
 
 ## 5. Container support (LXC, OCI)
 

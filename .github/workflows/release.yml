@@ -29,5 +29,7 @@ jobs:
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          files: styx.pyz
+          files: |
+            styx.pyz
+            scripts/install.sh
           generate_release_notes: true
