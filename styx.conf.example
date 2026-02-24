@@ -1,6 +1,7 @@
 # styx.conf — Example configuration file
 # All sections are optional. Styx auto-discovers everything for standard setups.
-# Copy to /etc/styx/styx.conf and uncomment only what you need to override.
+# Place next to styx.pyz for zipapp installs, or at /etc/styx/styx.conf for source.
+# Uncomment only what you need to override.
 
 # Override auto-discovered hosts (pvesh get /cluster/status).
 # Useful when SSH IPs differ from corosync IPs.

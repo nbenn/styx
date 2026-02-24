@@ -57,7 +57,7 @@ The script downloads the latest `styx.pyz` from GitHub releases, copies it to `/
 Optionally, copy a config file if you need to override auto-discovery:
 
 ```bash
-cp styx.conf.example /etc/styx/styx.conf
+cp styx.conf.example /opt/styx/styx.conf
 ```
 
 All subcommands (`orchestrate`, `vm-shutdown`, `local-shutdown`) are bundled in the single `styx.pyz` file.
@@ -75,7 +75,7 @@ Modes:
 
 Options:
   --phase <1|2|3>        Execute up to and including this phase (default: 3)
-  --config <path>        Config file path (default: /etc/styx/styx.conf)
+  --config <path>        Config file path (default: next to styx.pyz, else /etc/styx/styx.conf)
   --hosts HOST [HOST ...]  Restrict to these hosts only (orchestrator always included)
   --skip-poweroff        Shut down VMs but do not power off any host
 ```
@@ -147,7 +147,7 @@ For standard setups, **no config file is needed**. Styx auto-discovers hosts, VM
 Override only what differs:
 
 ```ini
-# /etc/styx/styx.conf
+# /opt/styx/styx.conf (or /etc/styx/styx.conf when running from source)
 
 # If SSH IPs differ from corosync IPs
 [hosts]

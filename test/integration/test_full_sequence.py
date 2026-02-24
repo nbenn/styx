@@ -202,6 +202,7 @@ class TestMainPhaseControl(unittest.TestCase):
                 ['--phase', str(phase), '--config', self._conf.name],
                 _discover_fn=fake_discover,
                 _ops_factory=fake_ops_factory,
+                _preflight_fn=lambda t, c, p: None,
             )
         finally:
             os.environ.pop('LOG_FILE', None)
@@ -258,6 +259,7 @@ class TestMainPhaseControl(unittest.TestCase):
                 ['--phase', '3', '--mode', 'dry-run', '--config', self._conf.name],
                 _discover_fn=lambda c: topo,
                 _ops_factory=lambda t, c: ops,
+                _preflight_fn=lambda t, c, p: None,
             )
         finally:
             os.environ.pop('LOG_FILE', None)
@@ -335,6 +337,7 @@ class TestIdempotency(unittest.TestCase):
                     ['--phase', str(phase), '--config', conf.name],
                     _discover_fn=lambda c: _default_topo(self._tmp),
                     _ops_factory=lambda t, c: ops,
+                    _preflight_fn=lambda t, c, p: None,
                 )
         finally:
             os.environ.pop('LOG_FILE', None)

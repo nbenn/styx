@@ -22,6 +22,9 @@ class TestPolicy(unittest.TestCase):
     def test_on_warning_does_not_raise(self):
         Policy().on_warning('something bad')
 
+    def test_on_preflight_failure_does_not_raise(self):
+        Policy().on_preflight_failure('something bad')
+
     def test_phase_gate_is_noop(self):
         Policy().phase_gate('any summary')
 
@@ -42,6 +45,11 @@ class TestDryRunPolicy(unittest.TestCase):
 
     def test_on_warning_does_not_raise(self):
         DryRunPolicy().on_warning('something bad')
+
+    def test_on_preflight_failure_raises_system_exit(self):
+        with self.assertRaises(SystemExit) as cm:
+            DryRunPolicy().on_preflight_failure('something bad')
+        self.assertIn('FATAL', str(cm.exception))
 
     def test_phase_gate_is_noop(self):
         DryRunPolicy().phase_gate('any summary')
@@ -111,6 +119,14 @@ class TestMaintenancePolicy(unittest.TestCase):
         def raise_eof(_):
             raise EOFError
         MaintenancePolicy(_input=raise_eof).phase_gate('summary')
+
+    # ── on_preflight_failure ─────────────────────────────────────────────────
+
+    def test_on_preflight_failure_raises_system_exit(self):
+        pol = MaintenancePolicy(_input=lambda _: 's')
+        with self.assertRaises(SystemExit) as cm:
+            pol.on_preflight_failure('something bad')
+        self.assertIn('FATAL', str(cm.exception))
 
     # ── inherits Policy behaviour ─────────────────────────────────────────────
 

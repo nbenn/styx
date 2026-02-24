@@ -67,17 +67,24 @@ def discover(config, *, _pvesh_fn=None, _pveceph_fn=None, _on_warning=None):
         topo.orchestrator = config.orchestrator or socket.gethostname().split('.')[0]
         log('Hosts: using config override')
     else:
-        topo.host_ips, topo.orchestrator = parse_cluster_status(pvesh('/cluster/status'))
+        try:
+            topo.host_ips, topo.orchestrator = parse_cluster_status(pvesh('/cluster/status'))
+        except Exception as e:
+            raise RuntimeError(f'Failed to discover hosts via pvesh /cluster/status: {e}') from e
     if config.orchestrator:
         topo.orchestrator = config.orchestrator
     log(f'Orchestrator: {topo.orchestrator}')
     log(f'Hosts: {" ".join(f"{h}({ip})" for h, ip in topo.host_ips.items())}')
 
     # VMs
-    topo.vm_host, topo.vm_name, topo.vm_type = parse_cluster_resources(
-        pvesh('/cluster/resources', '--type', 'vm')
-    )
-    log(f'Running VMs: {" ".join(topo.vm_host)}')
+    try:
+        topo.vm_host, topo.vm_name, topo.vm_type = parse_cluster_resources(
+            pvesh('/cluster/resources', '--type', 'vm')
+        )
+        log(f'Running VMs: {" ".join(topo.vm_host)}')
+    except Exception as e:
+        (_on_warning or log)(f'VM discovery failed ({e}) — proceeding with empty VM list')
+        topo.vm_host, topo.vm_name, topo.vm_type = {}, {}, {}
 
     # Kubernetes — config override, then API auto-discovery
     if config.workers or config.control_plane:
@@ -147,14 +154,17 @@ def _apply_hosts_filter(topo, hosts):
 
 # ── pre-flight (maintenance mode) ────────────────────────────────────────────
 
-def preflight(topo, config):
-    """Check SSH reachability, styx version, k8s API, and Ceph health.
+def preflight(topo, config, policy):
+    """Check SSH reachability, styx version, k8s API, Ceph health, and quorum.
 
-    Results are logged. A styx version mismatch or unreachable peer is fatal —
-    sys.exit(1) is called after logging all failures.
+    Collects all failures and calls policy.on_preflight_failure() once at the
+    end if any exist.  Emergency mode warns and continues; dry-run and
+    maintenance modes abort.
     """
     log('--- Pre-flight ---')
+    failures = []
 
+    # ── SSH reachability ──────────────────────────────────────────────────
     reachable = set()
     for host, ip in topo.host_ips.items():
         if host == topo.orchestrator:
@@ -169,13 +179,10 @@ def preflight(topo, config):
             reachable.add((host, ip))
         except Exception as e:
             log(f'SSH {host} ({ip}): UNREACHABLE ({e})')
+            failures.append(f'SSH unreachable: {host}')
 
-    # styx version check — only when running as a zipapp
+    # ── styx version check — only when running as a zipapp ────────────────
     if _local_pyz():
-        styx_failures = []
-        unreachable_count = (
-            len(topo.host_ips) - 1 - len(reachable)   # -1 for orchestrator
-        )
         for host, ip in reachable:
             cmd = f'python3 {_local_pyz()} --version'
             try:
@@ -190,25 +197,32 @@ def preflight(topo, config):
                 else:
                     log(f'styx {host}: VERSION MISMATCH '
                         f'(local={__version__}, remote={remote_version})')
-                    styx_failures.append(host)
+                    failures.append(f'styx version mismatch: {host}')
             except Exception as e:
                 log(f'styx {host}: NOT AVAILABLE ({e})')
-                styx_failures.append(host)
+                failures.append(f'styx not available: {host}')
 
-        total_failures = len(styx_failures) + unreachable_count
-        if total_failures:
-            import sys as _sys
-            _sys.exit(
-                f'FATAL: styx version check failed on {total_failures} host(s) '
-                f'— cannot proceed'
-            )
-
+    # ── Kubernetes health ─────────────────────────────────────────────────
     if topo.k8s_enabled and config.k8s_server and config.k8s_token:
         try:
             k8s    = _make_k8s_client(config)
             nodes  = k8s.list_nodes()
-            n      = len(nodes.get('items', []))
+            items  = nodes.get('items', [])
+            n      = len(items)
             log(f'k8s API: OK ({n} nodes)')
+            not_ready = []
+            for item in items:
+                name = item.get('metadata', {}).get('name', '<unknown>')
+                conditions = item.get('status', {}).get('conditions', [])
+                ready = any(
+                    c.get('type') == 'Ready' and c.get('status') == 'True'
+                    for c in conditions
+                )
+                if not ready:
+                    not_ready.append(name)
+            if not_ready:
+                log(f'k8s NotReady nodes: {" ".join(not_ready)}')
+                failures.append(f'k8s NotReady nodes: {" ".join(not_ready)}')
             for vmid in topo.k8s_workers + topo.k8s_cp:
                 node = topo.vm_name.get(vmid, vmid)
                 try:
@@ -219,15 +233,50 @@ def preflight(topo, config):
                     pass
         except Exception as e:
             log(f'k8s API: UNREACHABLE ({e})')
+            failures.append(f'k8s API unreachable: {e}')
 
+    # ── Ceph health ───────────────────────────────────────────────────────
     if topo.ceph_enabled:
         try:
             r = subprocess.run(
                 ['ceph', 'health'], capture_output=True, text=True, timeout=10,
             )
-            log(f'Ceph: {r.stdout.strip() or r.stderr.strip()}')
+            status = r.stdout.strip() or r.stderr.strip()
+            log(f'Ceph: {status}')
+            if not status.startswith('HEALTH_OK'):
+                failures.append(f'Ceph not healthy: {status}')
         except Exception as e:
             log(f'Ceph: unavailable ({e})')
+            failures.append(f'Ceph unavailable: {e}')
+
+    # ── Proxmox quorum ────────────────────────────────────────────────────
+    try:
+        r = subprocess.run(
+            ['pvecm', 'status'], capture_output=True, text=True, timeout=10,
+        )
+        quorate = None
+        for line in r.stdout.splitlines():
+            if line.strip().startswith('Quorate:'):
+                quorate = line.split(':', 1)[1].strip()
+                break
+        if quorate is None:
+            log('Quorum: could not parse pvecm status')
+            failures.append('Quorum: could not parse pvecm status')
+        elif quorate.lower().startswith('yes'):
+            log('Quorum: OK')
+        else:
+            log(f'Quorum: NOT quorate ({quorate})')
+            failures.append(f'Quorum lost: {quorate}')
+    except Exception as e:
+        log(f'Quorum: pvecm unavailable ({e})')
+        failures.append(f'Quorum check failed: {e}')
+
+    # ── Report ────────────────────────────────────────────────────────────
+    if failures:
+        summary = '; '.join(failures)
+        policy.on_preflight_failure(
+            f'{len(failures)} preflight failure(s): {summary}'
+        )
 
 
 def _log_runtime_budget(topo, config, phase):
@@ -477,17 +526,19 @@ def _log_revert_summary(topo, args, ceph_flags_set):
 
 # ── main ─────────────────────────────────────────────────────────────────────
 
-def main(argv=None, *, _discover_fn=None, _ops_factory=None):
+def main(argv=None, *, _discover_fn=None, _ops_factory=None, _preflight_fn=None):
     """Entry point for `styx orchestrate`.
 
     _discover_fn(config) -> ClusterTopology  — injectable for testing
     _ops_factory(topo, config) -> Operations — injectable for testing
+    _preflight_fn(topo, config, policy)      — injectable for testing
     """
     import argparse
+    import sys as _sys
 
     p = argparse.ArgumentParser(description='styx — graceful cluster shutdown')
     p.add_argument('--phase',  type=int, choices=[1, 2, 3], default=3)
-    p.add_argument('--config', default='/etc/styx/styx.conf')
+    p.add_argument('--config', default=None)
     p.add_argument('--mode',   choices=['dry-run', 'emergency', 'maintenance'],
                    default='emergency')
     p.add_argument('--hosts', metavar='HOST', nargs='+',
@@ -504,7 +555,24 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None):
         policy = MaintenancePolicy()
     else:
         policy = Policy()
-    config = load_config(args.config)
+
+    # ── Config path resolution ────────────────────────────────────────────
+    config_explicit = args.config is not None
+    if config_explicit:
+        config_path = args.config
+    else:
+        pyz = _local_pyz()
+        if pyz:
+            config_path = os.path.join(os.path.dirname(pyz), 'styx.conf')
+        else:
+            config_path = '/etc/styx/styx.conf'
+
+    if config_explicit and not os.path.isfile(config_path):
+        policy.on_preflight_failure(f'Config file not found: {config_path}')
+    elif not config_explicit and not os.path.isfile(config_path):
+        log(f'No config file at {config_path} — using defaults')
+
+    config = load_config(config_path)
 
     log('=' * 40)
     log('styx run started')
@@ -514,14 +582,18 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None):
     if _discover_fn is not None:
         topo = _discover_fn(config)
     else:
-        topo = discover(config, _on_warning=policy.on_warning)
+        try:
+            topo = discover(config, _on_warning=policy.on_warning)
+        except Exception as e:
+            log(f'FATAL: {e}')
+            _sys.exit(1)
 
     if args.hosts:
         _apply_hosts_filter(topo, args.hosts)
 
-    if args.mode in ('maintenance', 'dry-run'):
-        preflight(topo, config)
-        _log_runtime_budget(topo, config, args.phase)
+    pf = _preflight_fn if _preflight_fn is not None else preflight
+    pf(topo, config, policy)
+    _log_runtime_budget(topo, config, args.phase)
     type_counts = {}
     for vt in topo.vm_type.values():
         type_counts[vt] = type_counts.get(vt, 0) + 1

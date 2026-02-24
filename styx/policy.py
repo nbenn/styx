@@ -45,6 +45,9 @@ class Policy:
     def on_warning(self, msg):
         log(f'WARNING: {msg}')
 
+    def on_preflight_failure(self, msg):
+        log(f'WARNING: {msg} — continuing in emergency mode')
+
     def phase_gate(self, summary):
         """Checkpoint between phases. Emergency: no-op. Maintenance: prompt."""
 
@@ -59,6 +62,10 @@ class DryRunPolicy(Policy):
     @property
     def dry_run(self):
         return True
+
+    def on_preflight_failure(self, msg):
+        import sys
+        sys.exit(f'FATAL: {msg}')
 
     def execute(self, description, fn, *args, **kwargs):
         log(f'[dry-run] {description}')
@@ -75,6 +82,10 @@ class MaintenancePolicy(Policy):
         self._input = _input if _input is not None else input
         import threading
         self._lock = threading.Lock()
+
+    def on_preflight_failure(self, msg):
+        import sys
+        sys.exit(f'FATAL: {msg}')
 
     def on_warning(self, msg):
         log(f'WARNING: {msg}')

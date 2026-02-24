@@ -1,5 +1,6 @@
 """Unit tests for orchestrate.discover()."""
 
+import subprocess
 import unittest
 from unittest import mock
 
@@ -210,6 +211,52 @@ class TestDiscoverCeph(unittest.TestCase):
     def test_ceph_from_pveceph_false(self):
         topo = discover(_cfg(), _pvesh_fn=_pvesh, _pveceph_fn=lambda: False)
         self.assertFalse(topo.ceph_enabled)
+
+
+# ── Discovery failure handling ────────────────────────────────────────────────
+
+class TestDiscoverFailures(unittest.TestCase):
+
+    def test_vm_pvesh_failure_sets_empty_maps(self):
+        """/cluster/resources raises → empty VM maps + warning."""
+        calls = []
+        def pvesh(path, *args):
+            if path == '/cluster/resources':
+                raise subprocess.CalledProcessError(1, 'pvesh')
+            return _pvesh(path, *args)
+
+        warnings = []
+        topo = discover(_cfg(), _pvesh_fn=pvesh, _pveceph_fn=lambda: False,
+                        _on_warning=warnings.append)
+        self.assertEqual(topo.vm_host, {})
+        self.assertEqual(topo.vm_name, {})
+        self.assertEqual(topo.vm_type, {})
+        self.assertEqual(len(warnings), 1)
+        self.assertIn('VM discovery failed', warnings[0])
+
+    def test_host_pvesh_failure_raises_runtime_error(self):
+        """/cluster/status raises → RuntimeError."""
+        def pvesh(path, *args):
+            if path == '/cluster/status':
+                raise subprocess.CalledProcessError(1, 'pvesh')
+            return _pvesh(path, *args)
+
+        with self.assertRaises(RuntimeError) as cm:
+            discover(_cfg(), _pvesh_fn=pvesh, _pveceph_fn=lambda: False)
+        self.assertIn('pvesh /cluster/status', str(cm.exception))
+
+    def test_host_pvesh_not_called_when_config_hosts(self):
+        """config.hosts set → pvesh never called for hosts."""
+        calls = []
+        def pvesh(path, *args):
+            calls.append(path)
+            return _pvesh(path, *args)
+
+        cfg = _cfg(hosts={'pve1': '10.0.0.1', 'pve2': '10.0.0.2'},
+                   orchestrator='pve1')
+        topo = discover(cfg, _pvesh_fn=pvesh, _pveceph_fn=lambda: False)
+        self.assertNotIn('/cluster/status', calls)
+        self.assertEqual(set(topo.host_ips.keys()), {'pve1', 'pve2'})
 
 
 if __name__ == '__main__':

@@ -54,7 +54,7 @@ All discovery uses `pvesh`/`ha-manager` which require quorum — but discovery r
 
 ## Configuration
 
-Optional INI config file (default: `/etc/styx/styx.conf`). Only needed to override auto-discovery or set non-default values.
+Optional INI config file (default: next to `styx.pyz` for zipapp installs, `/etc/styx/styx.conf` for source). Only needed to override auto-discovery or set non-default values.
 
 ### Zero-Config (standard setup)
 
@@ -162,7 +162,7 @@ All sections are optional. SSH must be set up between all Proxmox hosts (root, k
 
 ```
 /opt/styx/styx.pyz                 # Self-contained executable (installed on every node)
-/etc/styx/styx.conf                # Configuration (optional, overrides auto-discovery)
+/opt/styx/styx.conf                # Configuration (optional, next to zipapp; or /etc/styx/styx.conf)
 ```
 
 `styx.pyz` is a Python zipapp (stdlib `zipapp` module, Python 3.6+). It bundles the entire `styx/` package in a single executable file. The install script (`scripts/install.sh`) copies it to `/opt/styx/styx.pyz` on every cluster node via SSH.
@@ -272,7 +272,7 @@ styx.pyz orchestrate [--mode <mode>] [--phase <1|2|3>] [--config <path>]
 
   --mode <mode>           dry-run | emergency | maintenance  (default: emergency)
   --phase <1|2|3>         Execute up to and including this phase (default: 3)
-  --config <path>         Config file path (default: /etc/styx/styx.conf)
+  --config <path>         Config file path (default: next to styx.pyz, else /etc/styx/styx.conf)
   --hosts HOST [HOST ...]  Restrict to these hosts only (orchestrator always included)
   --skip-poweroff         Shut down VMs but do not power off any host
 ```
@@ -287,15 +287,18 @@ Three mutually exclusive modes, implemented as three `Policy` subclasses in `sty
 | `maintenance` | `MaintenancePolicy` | Pre-flight checks before any action; `on_warning()` prompts `[skip/abort]`; `phase_gate()` requires explicit confirmation before proceeding. Designed for planned maintenance. |
 | `dry-run` | `DryRunPolicy` | `execute()` logs `[dry-run] <description>` and returns `None` without calling the function. Preflight checks run; `vm-shutdown --dry-run` is invoked synchronously on each peer to report real VM status without touching anything. |
 
-**Maintenance mode detail:**
+**Preflight checks:**
 
-Before touching anything, `preflight()` runs and logs:
+`preflight()` runs in **all** modes. It collects failures and delegates to `policy.on_preflight_failure()`:
+- **maintenance / dry-run**: failures are fatal (`sys.exit`)
+- **emergency**: failures are logged as warnings and execution continues
+
+Checks performed:
 - SSH reachability to every non-orchestrator host
-- `styx --version` on each reachable peer (only when running as zipapp) — version mismatch, missing install, or unreachable host is **fatal** (`sys.exit(1)`), since peers cannot execute styx commands. Emergency mode is unaffected (preflight never runs).
-- Kubernetes API status + per-node drainable pod count (drain load estimate)
-- Ceph health (`ceph health`)
-
-`preflight()` also runs in **dry-run** mode.
+- `styx --version` on each reachable peer (only when running as zipapp) — version mismatch or missing install
+- Kubernetes API status + node readiness (NotReady nodes) + per-node drainable pod count
+- Ceph health (`ceph health`) — anything other than `HEALTH_OK`
+- Proxmox quorum (`pvecm status`) — catches quorum loss early
 
 Two phase gates prompt for confirmation:
 1. After discovery + pre-flight: "N hosts, M VMs … proceed with shutdown?"
