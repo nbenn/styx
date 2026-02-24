@@ -17,6 +17,7 @@ from styx.discover import (
     ClusterTopology, parse_cluster_status, parse_cluster_resources,
     match_nodes_to_vms,
 )
+from styx.config import DEFAULT_CEPH_FLAGS_PARTIAL
 from styx.policy import Policy, DryRunPolicy, MaintenancePolicy, log, setup_log_file
 from styx.wrappers import Operations, _local_pyz
 
@@ -327,6 +328,37 @@ def run_polling_loop(topo, ops, policy, do_poweroff, poll_interval=None):
         time.sleep(poll_interval)
 
 
+# ── revert summary (partial runs) ────────────────────────────────────────────
+
+def _log_revert_summary(topo, args, ceph_flags_set):
+    """Log a checklist of manual steps needed to restore normal cluster state.
+
+    Called at the end of every --hosts run (skip in dry-run: nothing changed).
+    """
+    log('--- Partial run complete — revert checklist ---')
+
+    if ceph_flags_set:
+        flags = ' '.join(ceph_flags_set)
+        log(f'  Ceph OSD flags set: {flags}')
+        log(f'    → ceph osd unset {flags}')
+
+    k8s_nodes = [topo.vm_name.get(v, v) for v in topo.k8s_workers + topo.k8s_cp]
+    if k8s_nodes:
+        log(f'  k8s nodes cordoned: {" ".join(k8s_nodes)}')
+        log(f'    → kubectl uncordon {" ".join(k8s_nodes)}')
+
+    vmids = sorted(topo.vm_host)
+    if vmids:
+        if args.skip_poweroff:
+            log(f'  VM(s) stopped (host NOT powered off): {" ".join(vmids)}')
+            log(f'    → qm start {" ".join(vmids)}')
+        else:
+            peers = [h for h in topo.host_ips if h != topo.orchestrator]
+            log(f'  Host(s) powered off: {" ".join(peers)}')
+            log(f'    → power on host(s), then qm start {" ".join(vmids)}  '
+                f'(if not HA-managed)')
+
+
 # ── main ─────────────────────────────────────────────────────────────────────
 
 def main(argv=None, *, _discover_fn=None, _ops_factory=None):
@@ -441,10 +473,15 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None):
         ceph_note = ', set Ceph flags' if topo.ceph_enabled else ''
         policy.phase_gate(f'VM shutdown tracks complete — about to{ceph_note} power off all hosts. Proceed?')
 
-    # Ceph flags (phase 3 only, before polling loop)
+    # Ceph flags (phase 3 only, before polling loop).
+    # Partial runs use a reduced set: noout only (prevents mark-out timer);
+    # the recovery/rebalance/backfill/nodown flags are full-shutdown-only.
+    ceph_flags = (
+        config.ceph_flags_partial if args.hosts else config.ceph_flags
+    )
     if should_set_ceph_flags(args.phase) and topo.ceph_enabled:
         log('--- Setting Ceph OSD flags ---')
-        policy.execute('set_ceph_flags', ops.set_ceph_flags, config.ceph_flags)
+        policy.execute('set_ceph_flags', ops.set_ceph_flags, ceph_flags)
 
     run_polling_loop(topo, ops, policy, do_poweroff)
 
@@ -457,3 +494,11 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None):
         log('All VMs stopped — --skip-poweroff: hosts not powered off')
     else:
         log(f'Phase {args.phase} complete')
+
+    if args.hosts and not policy.dry_run:
+        applied_ceph = (
+            ceph_flags
+            if should_set_ceph_flags(args.phase) and topo.ceph_enabled
+            else []
+        )
+        _log_revert_summary(topo, args, applied_ceph)
