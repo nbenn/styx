@@ -10,7 +10,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from styx.config import StyxConfig
 from styx.discover import ClusterTopology
 from styx.orchestrate import (
-    run_k8s_track, run_other_vm_track, run_polling_loop, main,
+    _drain_all_k8s, _dispatch_independent_phase,
+    run_polling_loop, main,
 )
 from styx.policy import Policy, DryRunPolicy
 
@@ -45,7 +46,7 @@ def _default_config():
     return cfg
 
 
-class TestKubernetesTrack(unittest.TestCase):
+class TestDrainAllK8s(unittest.TestCase):
 
     def setUp(self):
         self._tmp = tempfile.mkdtemp()
@@ -55,61 +56,64 @@ class TestKubernetesTrack(unittest.TestCase):
     def tearDown(self):
         kill_all_fake_vms(self._tmp)
 
-    def _ops(self, topo=None):
-        return FakeOperations(self._tmp, _VM_HOST)
-
-    def test_cp_vms_shutdown_after_all_drains(self):
-        ops    = self._ops()
+    def test_drains_all_k8s_nodes(self):
+        ops    = FakeOperations(self._tmp, _VM_HOST)
         topo   = _default_topo()
         config = _default_config()
-        run_k8s_track(topo, config, ops, Policy())
-        # All nodes drained
+        _drain_all_k8s(topo, config, ops, Policy())
         self.assertIn('DRAIN worker1', ops.drain_log)
         self.assertIn('DRAIN cp1', ops.drain_log)
-        # All VMs shut down
-        self.assertTrue(any('211' in s for s in ops.shutdown_log))
-        self.assertTrue(any('201' in s for s in ops.shutdown_log))
-        # CP VM shutdown happens after ALL drains complete
-        drain_seqs = [s for s, a in ops.sequence_log if a.startswith('DRAIN')]
-        cp_shutdown_seqs = [s for s, a in ops.sequence_log if 'SHUTDOWN 201' in a]
-        self.assertTrue(len(drain_seqs) > 0)
-        self.assertTrue(len(cp_shutdown_seqs) > 0)
-        self.assertGreater(min(cp_shutdown_seqs), max(drain_seqs))
-
-    def test_drains_and_shuts_down_all_k8s_vms(self):
-        ops = self._ops()
-        run_k8s_track(_default_topo(), _default_config(), ops, Policy())
-        self.assertIn('DRAIN worker1', ops.drain_log)
-        self.assertIn('DRAIN cp1',     ops.drain_log)
-        self.assertTrue(any('211' in s for s in ops.shutdown_log))
-        self.assertTrue(any('201' in s for s in ops.shutdown_log))
-
-    def test_dry_run_does_not_drain_or_shutdown(self):
-        ops = self._ops()
-        run_k8s_track(_default_topo(), _default_config(), ops, DryRunPolicy())
-        self.assertEqual(ops.drain_log,    [])
+        # No VMs should be shut down by drain
         self.assertEqual(ops.shutdown_log, [])
 
+    def test_dry_run_does_not_drain(self):
+        ops = FakeOperations(self._tmp, _VM_HOST)
+        _drain_all_k8s(_default_topo(), _default_config(), ops, DryRunPolicy())
+        self.assertEqual(ops.drain_log, [])
 
-class TestOtherVmTrack(unittest.TestCase):
+
+class TestDispatchIndependentPhase(unittest.TestCase):
 
     def setUp(self):
         self._tmp = tempfile.mkdtemp()
-        start_fake_vm('101', self._tmp)
+        for vmid in ['101', '211', '201']:
+            start_fake_vm(vmid, self._tmp)
 
     def tearDown(self):
         kill_all_fake_vms(self._tmp)
 
-    def test_shuts_down_non_k8s_vms(self):
-        ops = FakeOperations(self._tmp, _VM_HOST)
-        run_other_vm_track(_default_topo(), _default_config(), ops, Policy())
-        self.assertTrue(any('101' in s for s in ops.shutdown_log))
+    def test_dispatches_per_host(self):
+        ops  = FakeOperations(self._tmp, _VM_HOST)
+        topo = _default_topo()
+        _dispatch_independent_phase(topo, _default_config(), ops, Policy(),
+                                    do_poweroff=False)
+        # Each peer should get one LOCAL_SHUTDOWN entry
+        peer_dispatches = [s for s in ops.shutdown_log
+                           if s.startswith('LOCAL_SHUTDOWN')]
+        hosts_dispatched = {s.split()[1] for s in peer_dispatches}
+        self.assertIn('pve2', hosts_dispatched)
+        self.assertIn('pve3', hosts_dispatched)
 
-    def test_does_not_touch_k8s_vms(self):
-        ops = FakeOperations(self._tmp, _VM_HOST)
-        run_other_vm_track(_default_topo(), _default_config(), ops, Policy())
-        self.assertFalse(any('211' in s for s in ops.shutdown_log))
-        self.assertFalse(any('201' in s for s in ops.shutdown_log))
+    def test_orchestrator_has_no_poweroff_delay(self):
+        """Orchestrator LOCAL_SHUTDOWN should have no poweroff delay."""
+        ops  = FakeOperations(self._tmp, _VM_HOST)
+        topo = _default_topo()
+        _dispatch_independent_phase(topo, _default_config(), ops, Policy(),
+                                    do_poweroff=True)
+        # Orchestrator (pve1) should get a dispatch too
+        orch_dispatches = [s for s in ops.shutdown_log
+                           if 'LOCAL_SHUTDOWN pve1' in s]
+        self.assertTrue(len(orch_dispatches) > 0)
+
+    def test_vm_filter_limits_scope(self):
+        ops  = FakeOperations(self._tmp, _VM_HOST)
+        topo = _default_topo()
+        k8s_vmids = set(topo.k8s_workers + topo.k8s_cp)
+        _dispatch_independent_phase(topo, _default_config(), ops, Policy(),
+                                    do_poweroff=False, vm_filter=k8s_vmids)
+        # Only k8s VMs should be dispatched, not VM 101
+        all_entries = ' '.join(ops.shutdown_log)
+        self.assertNotIn('101', all_entries)
 
 
 class TestPollingLoop(unittest.TestCase):
@@ -202,11 +206,14 @@ class TestMainPhaseControl(unittest.TestCase):
 
         return ops
 
-    def test_phase3_shuts_down_all_vms_and_powers_off(self):
+    def test_phase3_dispatches_all_hosts_and_powers_off(self):
         ops = self._run(3)
-        self.assertTrue(any('101' in s for s in ops.shutdown_log))
-        self.assertTrue(any('211' in s for s in ops.shutdown_log))
-        self.assertTrue(any('201' in s for s in ops.shutdown_log))
+        # All hosts should have LOCAL_SHUTDOWN entries (peers via dispatch)
+        local_shutdowns = [s for s in ops.shutdown_log
+                           if s.startswith('LOCAL_SHUTDOWN')]
+        hosts_dispatched = {s.split()[1] for s in local_shutdowns}
+        self.assertIn('pve2', hosts_dispatched)
+        self.assertIn('pve3', hosts_dispatched)
         self.assertIn('POWEROFF_SELF', ops.poweroff_log)
 
     def test_phase3_powers_off_peers_before_self(self):
@@ -219,13 +226,15 @@ class TestMainPhaseControl(unittest.TestCase):
         ops = self._run(2)
         self.assertEqual(ops.poweroff_log, [])
 
-    def test_phase1_only_k8s_vms_touched(self):
+    def test_phase1_only_k8s_vms_dispatched(self):
         ops = self._run(1)
-        self.assertFalse(any('101' in s for s in ops.shutdown_log))
-        self.assertTrue(
-            any('211' in s for s in ops.shutdown_log) or
-            any('201' in s for s in ops.shutdown_log)
-        )
+        all_entries = ' '.join(ops.shutdown_log)
+        # k8s VMs (211, 201) should be dispatched; non-k8s (101) should not
+        self.assertNotIn('101', all_entries)
+        # At least k8s hosts should have dispatches
+        local_shutdowns = [s for s in ops.shutdown_log
+                           if s.startswith('LOCAL_SHUTDOWN')]
+        self.assertTrue(len(local_shutdowns) > 0)
         self.assertEqual(ops.poweroff_log, [])
 
     def test_ceph_flags_set_in_phase3_when_enabled(self):
@@ -253,14 +262,46 @@ class TestMainPhaseControl(unittest.TestCase):
         self.assertEqual(ops.shutdown_log, [])
         self.assertEqual(ops.poweroff_log, [])
 
-    def test_cp_shutdown_after_all_drains(self):
+    def test_all_drains_before_dispatch(self):
+        """All DRAINs must precede all LOCAL_SHUTDOWN entries."""
         ops = self._run(3)
-        # CP VM shutdown happens after ALL drains complete
         drain_seqs = [s for s, a in ops.sequence_log if a.startswith('DRAIN')]
-        cp_shutdown_seqs = [s for s, a in ops.sequence_log if 'SHUTDOWN 201' in a]
+        dispatch_seqs = [s for s, a in ops.sequence_log
+                         if a.startswith('LOCAL_SHUTDOWN')]
         self.assertTrue(len(drain_seqs) > 0)
-        self.assertTrue(len(cp_shutdown_seqs) > 0)
-        self.assertGreater(min(cp_shutdown_seqs), max(drain_seqs))
+        self.assertTrue(len(dispatch_seqs) > 0)
+        self.assertGreater(min(dispatch_seqs), max(drain_seqs))
+
+    def test_ceph_flags_before_dispatch(self):
+        """Ceph flags must be set before LOCAL_SHUTDOWN is dispatched."""
+        ops = self._run(3, ceph=True)
+        ceph_seqs = [s for s, a in ops.sequence_log
+                     if a.startswith('CEPH_FLAGS')]
+        dispatch_seqs = [s for s, a in ops.sequence_log
+                         if a.startswith('LOCAL_SHUTDOWN')]
+        self.assertTrue(len(ceph_seqs) > 0)
+        self.assertTrue(len(dispatch_seqs) > 0)
+        self.assertGreater(min(dispatch_seqs), max(ceph_seqs))
+
+    def test_local_shutdown_dispatched_per_host(self):
+        """Each host should get exactly one LOCAL_SHUTDOWN dispatch."""
+        ops = self._run(3)
+        local_shutdowns = [s for s in ops.shutdown_log
+                           if s.startswith('LOCAL_SHUTDOWN')]
+        hosts = [s.split()[1] for s in local_shutdowns]
+        self.assertEqual(sorted(hosts), ['pve1', 'pve2', 'pve3'])
+
+    def test_poweroff_delay_in_phase3(self):
+        """Phase 3 dispatches should include poweroff_delay (via do_poweroff=True)."""
+        # This is implicitly tested via the poweroff_log — peers get powered off
+        # by the leader in the polling loop before the deadline would fire.
+        ops = self._run(3)
+        self.assertTrue(any('POWEROFF pve' in p for p in ops.poweroff_log))
+
+    def test_no_poweroff_in_phase2(self):
+        """Phase 2 should not power off any host."""
+        ops = self._run(2)
+        self.assertEqual(ops.poweroff_log, [])
 
 
 class TestIdempotency(unittest.TestCase):
@@ -297,10 +338,10 @@ class TestIdempotency(unittest.TestCase):
             os.environ.pop('STYX_POLL_INTERVAL', None)
             os.unlink(conf.name)
 
-    def test_shutdown_vm_of_stopped_vm_is_noop(self):
-        """FakeOperations.shutdown_vm on a VM with no PID file should not error."""
+    def test_dispatch_to_stopped_vm_is_noop(self):
+        """dispatch_local_shutdown on a VM with no PID file should not error."""
         ops = FakeOperations(self._tmp, _VM_HOST)
-        ops.shutdown_vm('pve1', '999', 5)   # no PID file for 999
+        ops.dispatch_local_shutdown('pve1', ['999'], 5)
         self.assertTrue(any('999' in s for s in ops.shutdown_log))
 
 

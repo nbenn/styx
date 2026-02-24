@@ -15,9 +15,10 @@ from styx.policy import log
 _HA_TRANSITION_TIMEOUT = 30
 
 
-_REMOTE_PYZ  = '/tmp/styx-deploy.pyz'
-_VM_LOG      = '/tmp/styx-vm-{vmid}.log'
-_VM_LOG_GLOB = '/tmp/styx-vm-*.log'
+_REMOTE_PYZ          = '/tmp/styx-deploy.pyz'
+_VM_LOG              = '/tmp/styx-vm-{vmid}.log'
+_VM_LOG_GLOB         = '/tmp/styx-vm-*.log'
+_LOCAL_SHUTDOWN_LOG   = '/tmp/styx-local-shutdown.log'
 
 
 def _local_pyz():
@@ -130,6 +131,27 @@ class Operations:
         except Exception as e:
             log(f'WARNING: shutdown_vm {vmid} on {host}: {e}')
 
+    def dispatch_local_shutdown(self, host, vmids, timeout_vm,
+                                poweroff_delay=None, dry_run=False):
+        """Dispatch a local-shutdown command to a peer host via SSH (nohup).
+
+        The peer will shut down all listed VMs in parallel and optionally
+        power itself off after poweroff_delay seconds.
+        """
+        args = ' '.join(vmids)
+        cmd = f'{self._vm_prefix(host)} local-shutdown {args} --timeout {timeout_vm}'
+        if poweroff_delay is not None:
+            cmd += f' --poweroff-delay {poweroff_delay}'
+        if dry_run:
+            cmd += ' --dry-run'
+        try:
+            self.run_on_host(
+                host,
+                f'nohup {cmd} </dev/null >{_LOCAL_SHUTDOWN_LOG} 2>&1 &',
+            )
+        except Exception as e:
+            log(f'WARNING: dispatch_local_shutdown to {host}: {e}')
+
     # ── Kubernetes ────────────────────────────────────────────────────────────
 
     def cordon_node(self, node):
@@ -199,15 +221,16 @@ class Operations:
     def poweroff_host(self, host):
         ip = self._host_ips[host]
         try:
-            # Collect vm-shutdown logs before the host disappears, then power off.
+            # Collect vm-shutdown and local-shutdown logs before the host
+            # disappears, then power off.
             r = subprocess.run(
                 ['ssh', '-o', 'ConnectTimeout=5', '-o', 'BatchMode=yes',
                  f'root@{ip}',
-                 f'cat {_VM_LOG_GLOB} 2>/dev/null; poweroff'],
+                 f'cat {_VM_LOG_GLOB} {_LOCAL_SHUTDOWN_LOG} 2>/dev/null; poweroff'],
                 capture_output=True, text=True, timeout=30,
             )
             if r.stdout.strip():
-                log(f'vm-shutdown log from {host}:\n{r.stdout.rstrip()}')
+                log(f'shutdown log from {host}:\n{r.stdout.rstrip()}')
         except Exception as e:
             log(f'WARNING: poweroff {host}: {e}')
 

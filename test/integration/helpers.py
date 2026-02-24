@@ -114,7 +114,25 @@ class FakeOperations:
         return True
 
     def set_ceph_flags(self, flags):
-        self.ceph_log.append(f'CEPH_FLAGS {" ".join(flags)}')
+        with self._lock:
+            self.ceph_log.append(f'CEPH_FLAGS {" ".join(flags)}')
+            self.sequence_log.append((next(self._seq), f'CEPH_FLAGS {" ".join(flags)}'))
+
+    def dispatch_local_shutdown(self, host, vmids, timeout_vm,
+                                poweroff_delay=None, dry_run=False):
+        entry = f'LOCAL_SHUTDOWN {host} vmids={",".join(sorted(vmids))}'
+        with self._lock:
+            self.shutdown_log.append(entry)
+            self.sequence_log.append((next(self._seq), entry))
+        # Kill the fake VM processes so the polling loop sees them as stopped
+        for vmid in vmids:
+            pid_file = self._run_dir / f'{vmid}.pid'
+            if pid_file.exists():
+                try:
+                    os.kill(int(pid_file.read_text().strip()), signal.SIGTERM)
+                except (ValueError, ProcessLookupError):
+                    pass
+                pid_file.unlink()
 
     def poweroff_host(self, host):
         self.poweroff_log.append(f'POWEROFF {host}')

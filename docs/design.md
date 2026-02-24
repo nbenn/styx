@@ -167,9 +167,10 @@ All sections are optional. SSH must be set up between all Proxmox hosts (root, k
 
 `styx.pyz` is a Python zipapp (stdlib `zipapp` module, Python 3.6+). It bundles the entire `styx/` package in a single executable file and is placed on shared Proxmox snippets storage (NFS or CephFS with `content snippets`) so every node can run it from the same path without per-node installation.
 
-Both subcommands are available from the single file:
+All subcommands are available from the single file:
 - `styx.pyz orchestrate` — main shutdown sequence (orchestrator only)
-- `styx.pyz vm-shutdown <vmid> [timeout]` — VM shutdown helper (all hosts)
+- `styx.pyz vm-shutdown <vmid> [timeout]` — single VM shutdown helper (all hosts)
+- `styx.pyz local-shutdown <vmid>... --timeout N [--poweroff-delay S]` — per-host VM shutdown with autonomous poweroff
 
 Built with `bash scripts/build.sh`. Published as a GitHub release artifact on version tags via `.github/workflows/release.yml`.
 
@@ -207,6 +208,30 @@ directly — no `socat` dependency.
 # Remote
 ssh root@<host-ip> 'kill -0 $(cat /var/run/qemu-server/'"${VMID}"'.pid 2>/dev/null) 2>/dev/null'
 ```
+
+### Local Shutdown (`styx local-shutdown`)
+
+Dispatched by the orchestrator after the coordinated phase. Each host shuts down its own VMs autonomously.
+
+**Usage:**
+```bash
+styx.pyz local-shutdown <vmid>... --timeout 120 [--poweroff-delay 135] [--dry-run]
+```
+
+**How it works:**
+1. Shut down all listed VMIDs in parallel using `ThreadPoolExecutor` (each calls `vm_shutdown.shutdown()`)
+2. Collect results and log failures
+3. If `--poweroff-delay` is set: sleep until the deadline, then `poweroff`
+
+**Autonomous poweroff deadline:**
+- Peers receive `--poweroff-delay` = `timeout_vm + 15` (ACPI wait + SIGTERM + SIGKILL)
+- This is relative (seconds from dispatch), avoiding clock-sync issues
+- In normal operation, the leader's polling loop powers off the peer *before* the deadline expires
+- If the leader dies, the peer powers itself off after the deadline — safe because all VMs everywhere are guaranteed stopped by then (all were dispatched before the leader could die)
+
+**The orchestrator** receives no `--poweroff-delay` — it powers off after the polling loop confirms all VMs are stopped.
+
+The implementation lives in `styx/local_shutdown.py`. Logs to `/tmp/styx-local-shutdown.log` (collected by `poweroff_host()` before the host is powered off).
 
 ### Kubernetes RBAC
 
@@ -262,17 +287,17 @@ Both modes run **identical code paths**. `Policy.phase_gate()` and `Policy.on_wa
 
 ### Phases
 
+The shutdown is split into a **coordinated phase** (requires cluster APIs and quorum) and an **independent phase** (each host acts autonomously):
+
 | Phase | Scope | What it does |
 |-------|-------|-------------|
-| 1     | Kubernetes | Drain nodes, issue VM shutdown for k8s VMs |
-| 2     | All VMs | Shut down non-k8s VMs, wait for all VMs to stop |
-| 3     | Hosts | Set Ceph OSD flags, power off Proxmox hosts |
+| 1     | Kubernetes | Drain k8s nodes, dispatch `local-shutdown` for k8s VMs |
+| 2     | All VMs | Dispatch `local-shutdown` for all VMs, wait for all to stop |
+| 3     | Hosts | Set Ceph OSD flags, dispatch with autonomous poweroff, power off hosts |
 
 With `--phase N`, the script executes up to and including phase N.
 
-### Interleaved Pipeline
-
-Steps don't wait for an entire phase to complete. As each resource finishes its current step, it immediately progresses to the next:
+### Pipeline
 
 ```
 Time ->
@@ -280,46 +305,45 @@ Time ->
 STARTUP:
   auto-discover:      [pvesh cluster/status + cluster/resources, kubectl get nodes, pveceph status]
   hosts filter:       [_apply_hosts_filter(topo, --hosts)] (if --hosts specified; restricts topology)
-  push executable:    [ssh root@<peer-ip> 'cat > /tmp/styx-deploy.pyz'] (all peers; non-destructive; enables dry-run on peers)
+  push executable:    [ssh root@<peer-ip> 'cat > /tmp/styx-deploy.pyz'] (all peers; non-destructive)
+
+COORDINATED PHASE (leader, requires quorum/API):
   cordon all k8s:     [kubectl cordon] (instant, prevents rescheduling before HA is disabled)
-  disable HA:         [ha-manager set ... --state disabled]  (k8s scope for phase 1; all for phase 2+; scoped to topo.vm_host)
+  disable HA:         [ha-manager set ... --state disabled]  (k8s scope for phase 1; all for phase 2+)
+  drain all k8s:      [drain all workers + CP in parallel, no VM shutdown]
 
-PARALLEL TRACKS (phases 1+2 run concurrently):
-  Track A (k8s):
-    all nodes:        [drain workers + CP in parallel]
-    as each worker drains:  [styx-vm-shutdown <vmid> &] (fire-and-forget)
-    ...all drains complete (barrier)...
-    CP VMs:           [styx-vm-shutdown <vmid> &] (fire-and-forget, after barrier)
+PHASE GATE (phase 3): "Drains complete — about to set Ceph flags, dispatch shutdown
+  with autonomous poweroff. Proceed?"
 
-  Track B (non-k8s VMs, starts at the same time as Track A):
-    non-k8s VMs:      [ssh <host> styx-vm-shutdown <vmid> &] (parallel)
+INDEPENDENT PHASE:
+  set Ceph flags:     [ceph osd set <flags>] (phase 3 only, moved after gate)
+  dispatch shutdown:  [styx local-shutdown <vmids> per host, one SSH per peer]
+                      peers get --poweroff-delay (timeout_vm + 15s) as leader-dead fallback
+                      orchestrator gets no delay (powers off after polling loop)
+  polling loop:       every 10s check PID files, poweroff hosts as VMs stop (phase 3)
+  post-loop:          poweroff orchestrator (self, always last)
 
-SET CEPH FLAGS (phase 3 only, before any host goes down):
-  ceph osd set <flags>
+PEER (normal case):
+  local-shutdown → shut down VMs → [leader sends poweroff before deadline]
 
-UNIFIED POLLING LOOP (after all shutdown commands issued):
-  Every 10s:
-    - skip hosts already marked as powered off
-    - check PID files for running VMs on each live host (local or SSH -o ConnectTimeout=5)
-    - if all VMs on a peer host are stopped -> poweroff that host, mark as powered off (phase 3 only)
-  After loop (phase 3 only):
-    - poweroff orchestrator (self, always last)
+PEER (leader-dead fallback):
+  local-shutdown → shut down VMs → sleep until deadline → power off self
 ```
 
 ### Phase Control
 
-| Flag | Startup | Track A (k8s) | Track B (non-k8s) | Ceph flags | Polling loop | Post-loop |
-|------|---------|---------------|-------------------|------------|--------------|-----------|
-| `--phase 1` | disable HA (k8s scope), cordon | drain + shutdown k8s VMs | skip | skip | skip | skip |
-| `--phase 2` | disable HA (all), cordon | drain + shutdown k8s VMs | shutdown non-k8s VMs | skip | poll, wait for all VMs | skip |
-| `--phase 3` (default) | disable HA (all), cordon | drain + shutdown k8s VMs | shutdown non-k8s VMs | set flags | poll, **poweroff hosts** (unless `--skip-poweroff`) | poweroff orchestrator (unless `--skip-poweroff` or orchestrator not in `--hosts`) |
+| Flag | Coordinated | Dispatch | Ceph flags | Polling | Poweroff |
+|------|-------------|----------|------------|---------|----------|
+| `--phase 1` | HA (k8s), cordon, drain | k8s VMs only, no poweroff delay | skip | skip | skip |
+| `--phase 2` | HA (all), cordon, drain | all VMs, no poweroff delay | skip | poll, wait for all VMs | skip |
+| `--phase 3` (default) | HA (all), cordon, drain | all VMs, with poweroff delay | set flags | poll, **poweroff hosts** | poweroff orchestrator |
 
 Notes:
-- Phase 1 issues `styx-vm-shutdown` for k8s VMs (fire-and-forget). Does **not** wait for them to stop. HA is disabled for k8s VMIDs only — non-k8s VMs are not touched in phase 1 so their HA resources are left alone.
-- Phase 2 widens HA disable to all resources, adds non-k8s VMs, and the polling loop.
-- Phase 3 adds Ceph flags and host poweroff.
+- Phase 1 dispatches `local-shutdown` for k8s VMs only (fire-and-forget). Does **not** wait for them to stop. HA is disabled for k8s VMIDs only.
+- Phase 2 widens HA disable to all resources, dispatches all VMs, and runs the polling loop.
+- Phase 3 adds Ceph flags (after the phase gate, before dispatch) and host poweroff with autonomous fallback.
 - Cordon always runs regardless of phase (idempotent prerequisite).
-- If `[kubernetes]` is not configured, track A is skipped entirely.
+- If `[kubernetes]` is not configured, drain is skipped entirely.
 
 ### State Tracking
 
@@ -512,7 +536,7 @@ Tests are written in Python `unittest` — no external test frameworks required.
 
 ```
 styx/
-├── __main__.py                       # CLI dispatch (orchestrate | vm-shutdown)
+├── __main__.py                       # CLI dispatch (orchestrate | vm-shutdown | local-shutdown)
 ├── policy.py                         # DryRunPolicy, Policy, MaintenancePolicy + log()
 ├── config.py                         # StyxConfig dataclass + INI parser
 ├── discover.py                       # pure parsing functions + ClusterTopology
@@ -520,6 +544,7 @@ styx/
 ├── decide.py                         # phase predicates (should_disable_ha, etc.)
 ├── k8s.py                            # K8sClient (cordon, drain, list nodes, etc.)
 ├── vm_shutdown.py                    # QMP + PID escalation (no socat)
+├── local_shutdown.py                 # per-host VM shutdown + autonomous poweroff
 ├── wrappers.py                       # Operations class (all external calls)
 └── orchestrate.py                    # main shutdown sequence
 test/
@@ -543,6 +568,7 @@ test/
 │   ├── test_k8s.py                       # K8sClient (cordon, drain, mirror pods, etc.)
 │   ├── test_policy.py                    # DryRunPolicy, Policy, MaintenancePolicy
 │   ├── test_vm_shutdown.py               # QMP mock server, PID escalation, check()
+│   ├── test_local_shutdown.py            # parallel shutdown, dry-run, poweroff deadline
 │   ├── test_wrappers_parsing.py          # _parse_ha_status, _parse_running_vmids, Operations commands
 │   ├── test_orchestrate_discover.py      # discover() with injected pvesh/pveceph fns
 │   ├── test_orchestrate_preflight.py     # preflight() SSH, k8s, Ceph checks
@@ -590,19 +616,10 @@ should_set_ceph_flags(phase)          # -> bool
 ```python
 ops.run_on_host(host, cmd)                     # SSH or local bash
 ops.get_running_vmids(host)                    # scan PID files on a host
-ops.shutdown_vm(host, vmid, timeout)           # python3 -m styx vm-shutdown (local or SSH)
-ops.cordon_node(node)                          # kubectl cordon via K8sClient
-ops.drain_node(node, timeout) -> bool          # kubectl drain via K8sClient
-ops.list_volume_attachments_for_node(node)     # CSI VolumeAttachment check post-drain
-ops.get_ha_started_sids()                      # ha-manager status -> started SIDs
-ops.disable_ha_sid(sid)                        # ha-manager set --state disabled
-ops.wait_ha_disabled(sid, timeout) -> bool     # poll until disabled or timeout
-ops.set_ceph_flags(flags)                      # ceph osd set <flag> for each flag
 ops.push_executable(host)                      # scp .pyz to peer via SSH stdin pipe; no-op in dev/source mode
 ops.check_vm(host, vmid)                       # vm-shutdown --dry-run (sync); used in dry-run mode
-ops.run_on_host(host, cmd)                     # SSH or local bash
-ops.get_running_vmids(host)                    # scan PID files on a host
-ops.shutdown_vm(host, vmid, timeout)           # nohup styx vm-shutdown (fire-and-forget; logs to /tmp/styx-vm-{vmid}.log)
+ops.shutdown_vm(host, vmid, timeout)           # nohup styx vm-shutdown (fire-and-forget)
+ops.dispatch_local_shutdown(host, vmids, ...)  # nohup styx local-shutdown (one per host)
 ops.cordon_node(node)                          # kubectl cordon via K8sClient
 ops.drain_node(node, timeout) -> bool          # kubectl drain via K8sClient
 ops.list_volume_attachments_for_node(node)     # CSI VolumeAttachment check post-drain
@@ -610,7 +627,7 @@ ops.get_ha_started_sids()                      # ha-manager status -> started SI
 ops.disable_ha_sid(sid)                        # ha-manager set --state disabled
 ops.wait_ha_disabled(sid, timeout) -> bool     # poll until disabled or timeout
 ops.set_ceph_flags(flags)                      # ceph osd set <flag> for each flag
-ops.poweroff_host(host)                        # ssh: collect vm-shutdown logs then poweroff
+ops.poweroff_host(host)                        # ssh: collect shutdown logs then poweroff
 ops.poweroff_self()                            # poweroff (orchestrator self)
 ```
 
@@ -619,6 +636,8 @@ ops.poweroff_self()                            # poweroff (orchestrator self)
 `main()` accepts `_discover_fn` and `_ops_factory` as keyword-only parameters for test injection.
 
 Key helpers:
+- `_drain_all_k8s(topo, config, ops, policy)` — drain all k8s nodes in parallel (no VM shutdown)
+- `_dispatch_independent_phase(topo, config, ops, policy, do_poweroff, vm_filter)` — dispatch `local-shutdown` to each host
 - `_apply_hosts_filter(topo, hosts)` — restricts topology to targeted hosts; orchestrator always kept reachable but its VMs only included if explicitly listed
 - `_log_revert_summary(topo, args, ceph_flags)` — logged at end of `--hosts` runs with exact commands to restore cluster state
 - `_log_startup_checklist(topo, ceph_flags)` — logged before `poweroff_self` in full runs with post-restart commands

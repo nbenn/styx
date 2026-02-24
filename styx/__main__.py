@@ -1,11 +1,11 @@
-"""python3 -m styx <orchestrate|vm-shutdown> [args...]"""
+"""python3 -m styx <orchestrate|vm-shutdown|local-shutdown> [args...]"""
 
 import sys
 
 
 def main():
     if len(sys.argv) < 2 or sys.argv[1] in ('-h', '--help'):
-        print('Usage: python3 -m styx <orchestrate|vm-shutdown> [args...]',
+        print('Usage: python3 -m styx <orchestrate|vm-shutdown|local-shutdown> [args...]',
               file=sys.stderr)
         sys.exit(1)
 
@@ -17,6 +17,9 @@ def main():
         run(argv)
     elif cmd == 'vm-shutdown':
         from styx.vm_shutdown import main as run
+        run(argv)
+    elif cmd == 'local-shutdown':
+        from styx.local_shutdown import main as run
         run(argv)
     else:
         print(f'Unknown command: {cmd}', file=sys.stderr)

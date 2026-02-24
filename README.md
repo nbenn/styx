@@ -9,15 +9,22 @@ Styx orchestrates a safe, ordered shutdown of your entire infrastructure stack �
 
 ## How it works
 
-Styx runs in three phases:
+Styx splits the shutdown into a **coordinated phase** (requires cluster APIs) and an **independent phase** (each host acts autonomously):
 
 | Phase | What happens |
 |-------|-------------|
-| 1 | Drain Kubernetes nodes, issue VM shutdown for k8s VMs |
-| 2 | Shut down all remaining VMs, wait for all to stop |
-| 3 | Set Ceph OSD flags, power off Proxmox hosts |
+| Coordinated | Cordon k8s nodes, disable HA, drain all k8s nodes in parallel |
+| Independent | Set Ceph OSD flags, dispatch `local-shutdown` to each host (one SSH per peer), poll + power off |
 
-Phases 1 and 2 run concurrently as two parallel tracks. VM shutdowns use the QEMU QMP socket directly — bypassing `qm shutdown` and the Proxmox API — so the script keeps working even after cluster quorum is lost.
+After the coordinated phase, each peer shuts down its own VMs via QMP and has an autonomous poweroff deadline as a leader-dead fallback — if the orchestrator dies, peers power themselves off after `timeout_vm + 15s`. VM shutdowns bypass `qm shutdown` and the Proxmox API, so the script keeps working even after cluster quorum is lost.
+
+Phase control (`--phase`):
+
+| Phase | Scope |
+|-------|-------|
+| 1 | Coordinated phase only + dispatch k8s VM shutdown |
+| 2 | + dispatch all VM shutdown + polling loop |
+| 3 | + Ceph flags + host poweroff (default) |
 
 ## Requirements
 

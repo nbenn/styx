@@ -242,24 +242,6 @@ def _disable_ha(topo, ops, policy, scope):
 
 # ── per-VM actions ────────────────────────────────────────────────────────────
 
-def _drain_and_shutdown(vmid, node, host, config, ops, policy):
-    log(f'Draining: {node} (VM {vmid} on {host})')
-    ok = policy.execute(f'drain {node}', ops.drain_node, node, config.timeout_drain)
-    if ok is None:        # dry-run — drain logged but skipped; check live VM status
-        ops.check_vm(host, vmid)
-        return
-    if not ok:
-        policy.on_warning(f'drain timed out or failed for {node}')
-    else:
-        log(f'Drained: {node}')
-        stale = ops.list_volume_attachments_for_node(node)
-        if stale:
-            policy.on_warning(
-                f'stale VolumeAttachments after drain of {node}: {", ".join(stale)}'
-            )
-    ops.shutdown_vm(host, vmid, config.timeout_vm)
-
-
 def _drain_only(vmid, node, host, config, ops, policy):
     log(f'Draining: {node} (VM {vmid} on {host})')
     ok = policy.execute(f'drain {node}', ops.drain_node, node, config.timeout_drain)
@@ -277,35 +259,20 @@ def _drain_only(vmid, node, host, config, ops, policy):
             )
 
 
-def _shutdown_only(vmid, host, config, ops, policy):
-    log(f'Shutting down VM: {vmid} on {host}')
-    if policy.dry_run:
-        ops.check_vm(host, vmid)
-    else:
-        ops.shutdown_vm(host, vmid, config.timeout_vm)
+# ── coordinated phase helpers ────────────────────────────────────────────────
 
-
-# ── tracks ────────────────────────────────────────────────────────────────────
-
-def run_k8s_track(topo, config, ops, policy):
+def _drain_all_k8s(topo, config, ops, policy):
+    """Drain all k8s nodes (workers + CP) in parallel. No VM shutdown."""
     if not topo.k8s_enabled or (not topo.k8s_workers and not topo.k8s_cp):
         return
 
-    log('--- Track A: Kubernetes ---')
+    log('--- Draining all k8s nodes ---')
 
     cp_set = set(topo.k8s_cp)
 
     with concurrent.futures.ThreadPoolExecutor() as ex:
         futs = {}
-        # Workers: drain + shutdown immediately
-        for vmid in topo.k8s_workers:
-            futs[ex.submit(
-                _drain_and_shutdown,
-                vmid, topo.vm_name.get(vmid, vmid), topo.vm_host[vmid],
-                config, ops, policy,
-            )] = vmid
-        # CP nodes: drain only (shutdown deferred until after barrier)
-        for vmid in topo.k8s_cp:
+        for vmid in topo.k8s_workers + topo.k8s_cp:
             futs[ex.submit(
                 _drain_only,
                 vmid, topo.vm_name.get(vmid, vmid), topo.vm_host[vmid],
@@ -322,25 +289,46 @@ def run_k8s_track(topo, config, ops, policy):
 
     log('All drains complete')
 
-    # Barrier: shut down CP VMs only after all drains + worker shutdowns finish
-    for vmid in topo.k8s_cp:
-        _shutdown_only(vmid, topo.vm_host[vmid], config, ops, policy)
-    log('All control-plane nodes done')
 
+# ── independent phase ────────────────────────────────────────────────────────
 
-def run_other_vm_track(topo, config, ops, policy):
-    log('--- Track B: Non-k8s VMs ---')
-    others = other_vmids(list(topo.vm_host), topo.k8s_workers, topo.k8s_cp)
-    with concurrent.futures.ThreadPoolExecutor() as ex:
-        futs = {
-            ex.submit(_shutdown_only, vmid, topo.vm_host[vmid], config, ops, policy): vmid
-            for vmid in others
-        }
-        for fut in concurrent.futures.as_completed(futs):
-            try:
-                fut.result()
-            except Exception as e:
-                policy.on_warning(f'VM {futs[fut]}: {e}')
+def _dispatch_independent_phase(topo, config, ops, policy, do_poweroff,
+                                vm_filter=None):
+    """Dispatch local-shutdown to each host.
+
+    Groups VMIDs by host, sends one local-shutdown command per host.
+    Peers get an autonomous poweroff deadline as a leader-dead fallback.
+    The orchestrator gets no deadline — it powers off after the polling loop.
+
+    vm_filter: if set, only include these VMIDs (e.g. k8s-only for phase 1).
+    """
+    log('--- Dispatching local-shutdown ---')
+
+    # Group VMIDs by host
+    by_host = {}
+    for vmid, host in topo.vm_host.items():
+        if vm_filter is not None and vmid not in vm_filter:
+            continue
+        by_host.setdefault(host, []).append(vmid)
+
+    # Calculate poweroff_delay for peers (autonomous fallback)
+    poweroff_delay = None
+    if do_poweroff:
+        poweroff_delay = config.timeout_vm + _VM_ESCALATION_OVERHEAD
+
+    # Dispatch to all hosts (peers get poweroff_delay, orchestrator does not)
+    for host, vmids in by_host.items():
+        is_orch = (host == topo.orchestrator)
+        delay = None if is_orch else poweroff_delay
+        log(f'Dispatching local-shutdown to {host}: {" ".join(vmids)}')
+        if policy.dry_run:
+            for vmid in vmids:
+                ops.check_vm(host, vmid)
+        else:
+            ops.dispatch_local_shutdown(
+                host, vmids, config.timeout_vm,
+                poweroff_delay=delay, dry_run=policy.dry_run,
+            )
 
 
 # ── polling loop ──────────────────────────────────────────────────────────────
@@ -506,7 +494,7 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None):
                 policy.on_warning(f'Failed to create k8s client: {e}')
         ops = Operations(topo.host_ips, topo.orchestrator, k8s)
 
-    # Deploy executable to peer hosts so vm-shutdown doesn't depend on CephFS.
+    # Deploy executable to peer hosts so local-shutdown doesn't depend on CephFS.
     # Always runs (including dry-run) — copying a file is non-destructive, and
     # dry-run needs the executable on peers to run vm-shutdown --dry-run.
     if _local_pyz():
@@ -518,6 +506,8 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None):
                     log(f'Deployed styx to {host}')
                 except Exception as e:
                     policy.on_warning(f'Failed to deploy styx to {host}: {e}')
+
+    # ── COORDINATED PHASE ─────────────────────────────────────────────────
 
     # Cordon all k8s nodes (idempotent)
     if topo.k8s_enabled:
@@ -536,28 +526,30 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None):
     elif topo.k8s_enabled:
         _disable_ha(topo, ops, policy, 'k8s')
 
-    # Track A (k8s) + Track B (other VMs) run concurrently
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
-        fut_a = ex.submit(run_k8s_track, topo, config, ops, policy)
-        fut_b = (
-            ex.submit(run_other_vm_track, topo, config, ops, policy)
-            if args.phase >= 2
-            else None
-        )
-        fut_a.result()
-        if fut_b:
-            fut_b.result()
+    # Drain all k8s nodes (workers + CP) in parallel — no VM shutdown
+    _drain_all_k8s(topo, config, ops, policy)
 
+    # Phase 1: dispatch for k8s VMs only, no poll, return
     if not should_run_polling(args.phase):
+        k8s_vmids = set(topo.k8s_workers + topo.k8s_cp)
+        _dispatch_independent_phase(topo, config, ops, policy,
+                                    do_poweroff=False, vm_filter=k8s_vmids)
         log(f'Phase {args.phase} complete')
         return
+
+    # ── PHASE GATE ────────────────────────────────────────────────────────
 
     do_poweroff = should_poweroff_hosts(args.phase) and not args.skip_poweroff
     if do_poweroff:
         ceph_note = ', set Ceph flags' if topo.ceph_enabled else ''
-        policy.phase_gate(f'VM shutdown tracks complete — about to{ceph_note} power off all hosts. Proceed?')
+        policy.phase_gate(
+            f'Drains complete — about to{ceph_note} dispatch shutdown'
+            f' with autonomous poweroff. Proceed?'
+        )
 
-    # Ceph flags (phase 3 only, before polling loop).
+    # ── INDEPENDENT PHASE ─────────────────────────────────────────────────
+
+    # Ceph flags (phase 3 only, before dispatch).
     # Partial runs use a reduced set: noout only (prevents mark-out timer);
     # the recovery/rebalance/backfill/nodown flags are full-shutdown-only.
     ceph_flags = (
@@ -566,6 +558,9 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None):
     if should_set_ceph_flags(args.phase) and topo.ceph_enabled:
         log('--- Setting Ceph OSD flags ---')
         policy.execute('set_ceph_flags', ops.set_ceph_flags, ceph_flags)
+
+    # Dispatch local-shutdown to each host (one SSH per peer)
+    _dispatch_independent_phase(topo, config, ops, policy, do_poweroff)
 
     run_polling_loop(topo, ops, policy, do_poweroff)
 
