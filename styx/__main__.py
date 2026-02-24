@@ -10,9 +10,23 @@ def main():
         sys.exit(0)
 
     if len(sys.argv) < 2 or sys.argv[1] in ('-h', '--help'):
-        print('Usage: python3 -m styx <orchestrate|vm-shutdown|local-shutdown> [args...]',
-              file=sys.stderr)
-        sys.exit(1)
+        from styx import __version__
+        print(f'''\
+styx {__version__} — graceful cluster shutdown for Proxmox + Kubernetes + Ceph
+
+Usage: styx <command> [args...]
+
+Commands:
+  orchestrate     Coordinate full cluster shutdown across all nodes
+  vm-shutdown     Gracefully shut down a single VM via QMP/ACPI
+  local-shutdown  Shut down local workloads and optionally power off host
+
+Options:
+  -h, --help      Show this help message
+  --version       Show version
+
+Run "styx <command> --help" for command-specific options.''', file=sys.stderr)
+        sys.exit(0 if sys.argv[1:] else 1)
 
     cmd  = sys.argv[1]
     argv = sys.argv[2:]
