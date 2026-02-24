@@ -23,14 +23,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Verify version matches tag
+      - name: Verify versions match tag
         run: |
           tag="${GITHUB_REF_NAME#v}"
-          internal="$(python3 -c 'from styx import __version__; print(__version__)')"
-          if [ "$tag" != "$internal" ]; then
-            echo "::error::Tag v${tag} does not match __version__ '${internal}'"
-            exit 1
+          py_version="$(python3 -c 'from styx import __version__; print(__version__)')"
+          sh_version="$(grep -m1 '^VERSION=' scripts/install.sh | cut -d'"' -f2)"
+          ok=true
+          if [ "$tag" != "$py_version" ]; then
+            echo "::error::Tag v${tag} does not match styx.__version__ '${py_version}'"
+            ok=false
           fi
+          if [ "$tag" != "$sh_version" ]; then
+            echo "::error::Tag v${tag} does not match install.sh VERSION '${sh_version}'"
+            ok=false
+          fi
+          $ok
 
       - name: Build styx.pyz
         run: bash scripts/build.sh styx.pyz

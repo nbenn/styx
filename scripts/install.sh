@@ -13,6 +13,7 @@
 
 set -euo pipefail
 
+VERSION="0.1.1"
 INSTALL_DIR="/opt/styx"
 INSTALL_PATH="${INSTALL_DIR}/styx.pyz"
 RELEASE_BASE="https://github.com/nbenn/styx/releases/latest/download"
@@ -57,8 +58,9 @@ if $update_self; then
     echo "Downloading latest install.sh from GitHub releases..."
     curl -fSL "${RELEASE_BASE}/install.sh" -o "${self}.tmp"
     chmod +x "${self}.tmp"
+    new_version="$(grep -m1 '^VERSION=' "${self}.tmp" | cut -d'"' -f2)"
     mv "${self}.tmp" "$self"
-    echo "Updated ${self}"
+    echo "Updated ${self}: ${VERSION} -> ${new_version:-unknown}"
     exit 0
 fi
 
