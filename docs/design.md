@@ -176,11 +176,11 @@ Built with `bash scripts/build.sh`. Published as a GitHub release artifact on ve
 
 ### Versioning
 
-The canonical version lives in `styx/__init__.__version__` and is exposed via `styx --version`. The release workflow verifies that the git tag (e.g. `v0.1.1`) matches `__version__` (e.g. `0.1.1`) before building — a mismatch fails the release. The install script reports the version it is deploying by running `python3 <pyz> --version` after download.
+The canonical version lives in `styx/__init__.__version__` and is exposed via `styx --version`. The install script (`scripts/install.sh`) carries its own `VERSION` variable, kept in sync. The release workflow verifies that both match the git tag (e.g. `v0.1.1`) before building — a mismatch in either fails the release. The install script reports the version it is deploying by running `python3 <pyz> --version` after download.
 
 The install script accepts `--install-dir DIR` to override the default `/opt/styx` location. The orchestrator infers the peer install path from its own `sys.argv[0]`, so all nodes must use the same install directory.
 
-The install script also supports `--update-self`, which fetches the latest `install.sh` from GitHub releases and atomically replaces itself.
+The install script also supports `--update-self`, which fetches the latest `install.sh` from GitHub releases, atomically replaces itself, and reports the old and new versions.
 
 ## Components
 
