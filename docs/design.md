@@ -4,7 +4,7 @@ A general-purpose tool for automated graceful shutdown of infrastructure stacks 
 
 ## Scope
 
-- **VMs only** (QEMU/KVM). LXC containers and Proxmox 9 OCI containers are not supported.
+- **VMs only** (QEMU/KVM) today. Workload type infrastructure is in place (`vm_type` plumbed through discovery, dispatch, and CLI) for future LXC and Proxmox 9 OCI support — see Future Work.
 - **Ceph on Proxmox hosts** (native Proxmox Ceph integration). Ceph-in-VM is not supported.
 - **Proxmox clusters** (multi-node). Single-node support is a stretch goal (see Known Limitations).
 - Styx is a **command**, not a daemon. The trigger mechanism (NUT, cron, manual) is external and out of scope.
@@ -235,6 +235,14 @@ TYPE defaults to `qemu` if omitted. Examples: `qemu:101`, `lxc:200`, `301` (bare
 **The orchestrator** receives no `--poweroff-delay` — it powers off after the polling loop confirms all VMs are stopped.
 
 The implementation lives in `styx/local_shutdown.py`. Logs to `/tmp/styx-local-shutdown.log` (collected by `poweroff_host()` before the host is powered off).
+
+**Design note — why host poweroff is centrally coordinated, not autonomous:**
+
+An earlier design had each host autonomously power itself off as soon as its own VMs were stopped — fully independent, no polling loop, no leader. This does not work when VMs run on Ceph storage. Ceph availability depends on a minimum number of OSDs (and therefore hosts) being up. If hosts that finish their VM shutdowns first power themselves off immediately, they take their OSDs down while VMs on slower hosts are still doing I/O during graceful shutdown. Those VMs stall on blocked storage, time out, and get force-killed — defeating the purpose of graceful shutdown.
+
+The fix is the current design: VM shutdown is dispatched independently (each host shuts down its own VMs), but host poweroff is coordinated by the leader's polling loop, which waits until *all* VMs across the cluster are confirmed stopped before powering off *any* host. This guarantees that no Ceph OSD goes away while a VM anywhere is still running. The autonomous poweroff deadline on peers exists only as a leader-dead fallback — it is deliberately set long enough (`timeout_vm + 15s`) that all VMs everywhere are guaranteed stopped before any peer self-terminates.
+
+Do not revisit the fully-autonomous approach without solving the Ceph storage dependency. Any design where a host can power off while VMs elsewhere are still running risks storage stalls and data loss.
 
 ### Kubernetes RBAC
 
@@ -805,32 +813,45 @@ Reviewed [proxmox-guardian](https://github.com/Guilhem-Bonnet/proxmox-guardian) 
 - **Startup/recovery automation**: manual procedure with clear documentation is the right trade-off; automating recovery risks acting on incomplete state.
 - **Tag-based VM discovery**: considered and rejected (see above).
 
-## Investigation: Quorum-Free Termination Strategies
-
-### LXC Containers
-
-`lxc-stop -n <CTID> -t <timeout>` is quorum-free and handles the full
-graceful→force lifecycle. `lxc-ls --running` detects running containers
-without quorum. `pct shutdown`/`pct stop` require Proxmox quorum — unusable
-during shutdown when quorum may be lost.
-
-PID file paths (`/var/run/lxc/<CTID>/`) need verification on real Proxmox
-hardware to confirm the exact layout for PID-based status checks (analogous to
-`/var/run/qemu-server/<VMID>.pid` for QEMU).
-
-### OCI Containers (Proxmox 9)
-
-Proxmox 9 adds OCI container support. The runtime is `crun`/`runc`.
-Quorum-free termination path is unclear — needs investigation on Proxmox 9
-hardware to determine whether a local CLI or socket interface can stop
-containers without Proxmox API calls.
-
 ## Known Limitations
 
-- **VMs only**: LXC containers and Proxmox 9 OCI containers are not supported. The architecture allows adding a `ct_shutdown.py` handler later — register it in the dispatch map and widen the discovery filter.
+- **VMs only** (for now): LXC containers and Proxmox 9 OCI containers are not gracefully stopped. The workload type infrastructure is in place (`vm_type` threaded through discovery, dispatch, CLI, and polling; `local_shutdown.py` uses dispatch maps keyed by type), so adding a new workload requires implementing a handler, registering it, and widening the discovery filter. See Future Work for concrete next steps.
 - **Ceph on hosts only**: Ceph-in-VM topologies are not supported. Ceph OSD flags are set after VM shutdown commands are issued (before any host goes down), which is correct for on-host Ceph.
 - **No single-node support (v1)**: Styx assumes a multi-node Proxmox cluster. Single-node is a simpler problem and could be a stretch goal for v2.
 - **VM migration**: Do not run styx while a VM live migration is in progress. The VMID-to-host mapping is captured once at startup and not refreshed. A migrating VM may receive shutdown commands on the wrong host. The `pvesh` resource data includes a `status` field that could potentially detect migrations — this is a future enhancement if needed.
 - **Orphaned shutdown processes**: If the main `styx` script is killed, backgrounded `styx-vm-shutdown` processes continue running. This is intentional — they will complete their VM shutdowns independently.
 - **CephFS teardown**: Clusters running CephFS could benefit from an explicit `ceph fs fail` + `ceph fs set cluster_down true` before shutdown, reversed on startup. Not implemented; CephFS clusters should verify filesystem health after recovery.
 - **MON-last host ordering**: Powering off the Proxmox host running the Ceph MON last would be ideal to maintain Ceph quorum as long as possible. This requires Ceph topology awareness (which hosts run MONs) that styx does not currently have. The polling loop powers off hosts as their VMs stop, which is correct but not MON-aware.
+
+## Future Work
+
+### LXC Container Support
+
+**What's known:**
+- `lxc-stop -n <CTID> -t <timeout>` is quorum-free and handles the full graceful→force lifecycle.
+- `lxc-ls --running` detects running containers without quorum.
+- `pct shutdown`/`pct stop` require Proxmox quorum — unusable during shutdown when quorum may be lost.
+
+**What needs hardware verification:**
+- PID file paths: container init PID is tracked under `/var/run/lxc/<CTID>/` but the exact layout needs verification on real Proxmox hardware to confirm PID-based status checks (analogous to `/var/run/qemu-server/<VMID>.pid` for QEMU).
+- Signal behavior: whether `lxc-stop` signal escalation matches the ACPI→SIGTERM→SIGKILL pattern used for VMs.
+
+**Implementation steps:**
+1. Implement `ct_shutdown.py` with `shutdown(ctid, timeout)` and `check(ctid)` using `lxc-stop` and PID-based polling.
+2. Register the handler in `local_shutdown._SHUTDOWN` / `_CHECK` dispatch maps.
+3. Widen `parse_cluster_resources()` filter to include `type == "lxc"`.
+4. Add `lxc-ls --running` parsing to `get_running_vmids()` for PID-free status checks.
+
+### OCI Container Support (Proxmox 9)
+
+Proxmox 9 adds OCI container support. The runtime is `crun`/`runc`. Quorum-free termination path is unclear — needs investigation on Proxmox 9 hardware to determine whether a local CLI or socket interface can stop containers without Proxmox API calls. Same implementation pattern as LXC once the quorum-free mechanism is identified.
+
+### Preflight Container Warning (Short-Term)
+
+Detect LXC and OCI containers in the `pvesh get /cluster/resources --type vm` output during preflight and emit a warning: "Found N LXC/OCI containers that will not be gracefully stopped." No new API calls needed — the data is already available from the existing discovery call (`parse_cluster_resources()` currently filters to `type == "qemu"` and discards the rest).
+
+### Other
+
+- **Single-node support**: Out of scope for v1; simpler problem — stretch goal for v2 (see Known Limitations).
+- **CephFS teardown**: Explicit `ceph fs fail` + `ceph fs set cluster_down true` before shutdown, reversed on startup (see Known Limitations).
+- **MON-aware host ordering**: Power off Ceph MON hosts last to maintain Ceph quorum longer; requires Ceph topology awareness (see Known Limitations).

@@ -207,7 +207,7 @@ Unit tests cover pure decision logic and fixture-based parsing (no infrastructur
 
 ## Scope and limitations
 
-- **VMs only**: LXC and OCI containers are not supported
+- **VMs only** (for now): LXC and OCI containers are not gracefully stopped. Workload type infrastructure is in place for future support — see [Future Work](docs/design.md#future-work)
 - **Ceph on Proxmox hosts only**: Ceph-in-VM is not supported
 - **Multi-node clusters only**: single-node Proxmox is not supported in v1
 - **No live migration safety**: do not run styx while a VM migration is in progress
