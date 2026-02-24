@@ -330,6 +330,29 @@ def run_polling_loop(topo, ops, policy, do_poweroff, poll_interval=None):
 
 # ── revert summary (partial runs) ────────────────────────────────────────────
 
+def _log_startup_checklist(topo, ceph_flags_set):
+    """Log steps to run after bringing a fully-shutdown cluster back up."""
+    items = []
+
+    if ceph_flags_set:
+        flags = ' '.join(ceph_flags_set)
+        items.append((f'Ceph OSD flags set: {flags}',
+                      f'(after Ceph healthy) ceph osd unset {flags}'))
+
+    k8s_nodes = [topo.vm_name.get(v, v) for v in topo.k8s_workers + topo.k8s_cp]
+    if k8s_nodes:
+        items.append((f'k8s nodes cordoned: {" ".join(k8s_nodes)}',
+                      f'(after k8s API up) kubectl uncordon {" ".join(k8s_nodes)}'))
+
+    if not items:
+        return
+
+    log('--- Shutdown complete — startup checklist ---')
+    for what, cmd in items:
+        log(f'  {what}')
+        log(f'    → {cmd}')
+
+
 def _log_revert_summary(topo, args, ceph_flags_set):
     """Log a checklist of manual steps needed to restore normal cluster state.
 
@@ -485,6 +508,18 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None):
 
     run_polling_loop(topo, ops, policy, do_poweroff)
 
+    # Log completion notes before potentially going dark (poweroff flushes nothing).
+    if not policy.dry_run:
+        applied_ceph = (
+            ceph_flags
+            if should_set_ceph_flags(args.phase) and topo.ceph_enabled
+            else []
+        )
+        if args.hosts:
+            _log_revert_summary(topo, args, applied_ceph)
+        else:
+            _log_startup_checklist(topo, applied_ceph)
+
     # Power off orchestrator only on full runs or when explicitly targeted.
     poweroff_self = do_poweroff and (not args.hosts or topo.orchestrator in args.hosts)
     if poweroff_self:
@@ -494,11 +529,3 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None):
         log('All VMs stopped — --skip-poweroff: hosts not powered off')
     else:
         log(f'Phase {args.phase} complete')
-
-    if args.hosts and not policy.dry_run:
-        applied_ceph = (
-            ceph_flags
-            if should_set_ceph_flags(args.phase) and topo.ceph_enabled
-            else []
-        )
-        _log_revert_summary(topo, args, applied_ceph)
