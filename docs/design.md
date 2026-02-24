@@ -174,6 +174,12 @@ All subcommands are available from the single file:
 
 Built with `bash scripts/build.sh`. Published as a GitHub release artifact on version tags via `.github/workflows/release.yml`.
 
+### Versioning
+
+The canonical version lives in `styx/__init__.__version__` and is exposed via `styx --version`. The release workflow verifies that the git tag (e.g. `v0.1.1`) matches `__version__` (e.g. `0.1.1`) before building — a mismatch fails the release. The install script reports the version it is deploying by running `python3 <pyz> --version` after download.
+
+The install script also supports `--update-self`, which fetches the latest `install.sh` from GitHub releases and atomically replaces itself.
+
 ## Components
 
 ### VM Shutdown Helper (`styx-vm-shutdown`)
@@ -741,7 +747,7 @@ def test_dry_run_no_side_effects(self):
 2. Run full suite under `coverage run --source=styx`
 3. Generate `coverage.xml` and upload to Codecov via `codecov/codecov-action@v5`
 
-`.github/workflows/release.yml` triggers on `v*` tags, builds `styx.pyz` via `scripts/build.sh`, and publishes it as a GitHub release artifact.
+`.github/workflows/release.yml` triggers on `v*` tags. It first verifies that the tag matches `styx.__version__`, then builds `styx.pyz` via `scripts/build.sh`, and publishes it (along with `install.sh`) as GitHub release assets.
 
 ### What's NOT Tested (requires real infrastructure)
 
