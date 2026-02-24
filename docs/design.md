@@ -35,6 +35,7 @@ Styx auto-discovers the entire environment at startup. For standard setups, **no
 | K8s credentials | `[kubernetes] server` + `token` + optional `ca_cert` (required for API-based discovery) | — |
 | Ceph enabled | `pveceph status` exits 0 | `[ceph] enabled` |
 | Ceph flags | defaults: `noout, norecover, norebalance, nobackfill, nodown` | `[ceph] flags` |
+| Ceph flags (partial runs) | default: `noout` | `[ceph] partial_flags` |
 | Timeouts | defaults: drain=120, vm=120 | `[timeouts]` |
 
 ### Startup Logic
@@ -123,6 +124,10 @@ enabled = true
 # which is a post-boot concern. Add it here only if you want to delay OSD start
 # on the next boot (e.g., to allow manual verification before OSDs come online).
 flags = noout, norecover, norebalance, nobackfill, nodown
+# Flags set during partial --hosts runs (default: noout only).
+# nodown and recovery/rebalance/backfill flags are full-cluster-shutdown precautions.
+# noout alone is the standard single-node maintenance flag.
+partial_flags = noout
 
 [timeouts]
 # All values in seconds
@@ -155,7 +160,8 @@ All sections are optional. SSH must be set up between all Proxmox hosts (root, k
 ### File Layout
 
 ```
-/var/lib/vz/snippets/styx.pyz      # Self-contained executable (all Proxmox hosts, via shared storage)
+/var/lib/vz/snippets/styx.pyz      # Self-contained executable (shared storage; path varies by pool)
+/tmp/styx-deploy.pyz               # Per-run copy pushed to each peer via SSH before shutdown begins
 /etc/styx/styx.conf                # Configuration (optional, overrides auto-discovery)
 ```
 
@@ -218,10 +224,13 @@ A dedicated ServiceAccount with minimal permissions for drain operations. A long
 
 ```
 styx.pyz orchestrate [--mode <mode>] [--phase <1|2|3>] [--config <path>]
+                     [--hosts HOST [HOST ...]] [--skip-poweroff]
 
-  --mode <mode>    dry-run | emergency | maintenance  (default: emergency)
-  --phase <1|2|3>  Execute up to and including this phase (default: 3)
-  --config <path>  Config file path (default: /etc/styx/styx.conf)
+  --mode <mode>           dry-run | emergency | maintenance  (default: emergency)
+  --phase <1|2|3>         Execute up to and including this phase (default: 3)
+  --config <path>         Config file path (default: /etc/styx/styx.conf)
+  --hosts HOST [HOST ...]  Restrict to these hosts only (orchestrator always included)
+  --skip-poweroff         Shut down VMs but do not power off any host
 ```
 
 ### Modes
@@ -232,7 +241,7 @@ Three mutually exclusive modes, implemented as three `Policy` subclasses in `sty
 |------|-------|-----------|
 | `emergency` | `Policy` | Execute automatically; `on_warning()` logs and continues; `phase_gate()` is a no-op. Default — designed for unattended UPS-triggered shutdowns. |
 | `maintenance` | `MaintenancePolicy` | Pre-flight checks before any action; `on_warning()` prompts `[skip/abort]`; `phase_gate()` requires explicit confirmation before proceeding. Designed for planned maintenance. |
-| `dry-run` | `DryRunPolicy` | `execute()` logs `[dry-run] <description>` and returns `None` without calling the function. All other behaviour is identical to emergency. |
+| `dry-run` | `DryRunPolicy` | `execute()` logs `[dry-run] <description>` and returns `None` without calling the function. Preflight checks run; `vm-shutdown --dry-run` is invoked synchronously on each peer to report real VM status without touching anything. |
 
 **Maintenance mode detail:**
 
@@ -240,6 +249,8 @@ Before touching anything, `preflight()` runs and logs:
 - SSH reachability to every non-orchestrator host
 - Kubernetes API status + per-node drainable pod count (drain load estimate)
 - Ceph health (`ceph health`)
+
+`preflight()` also runs in **dry-run** mode.
 
 Two phase gates prompt for confirmation:
 1. After discovery + pre-flight: "N hosts, M VMs … proceed with shutdown?"
@@ -268,8 +279,10 @@ Time ->
 
 STARTUP:
   auto-discover:      [pvesh cluster/status + cluster/resources, kubectl get nodes, pveceph status]
+  hosts filter:       [_apply_hosts_filter(topo, --hosts)] (if --hosts specified; restricts topology)
+  push executable:    [ssh root@<peer-ip> 'cat > /tmp/styx-deploy.pyz'] (all peers; non-destructive; enables dry-run on peers)
   cordon all k8s:     [kubectl cordon] (instant, prevents rescheduling before HA is disabled)
-  disable HA:         [ha-manager set ... --state disabled]  (k8s scope for phase 1; all for phase 2+)
+  disable HA:         [ha-manager set ... --state disabled]  (k8s scope for phase 1; all for phase 2+; scoped to topo.vm_host)
 
 PARALLEL TRACKS (phases 1+2 run concurrently):
   Track A (k8s):
@@ -298,7 +311,7 @@ UNIFIED POLLING LOOP (after all shutdown commands issued):
 |------|---------|---------------|-------------------|------------|--------------|-----------|
 | `--phase 1` | disable HA (k8s scope), cordon | drain + shutdown k8s VMs | skip | skip | skip | skip |
 | `--phase 2` | disable HA (all), cordon | drain + shutdown k8s VMs | shutdown non-k8s VMs | skip | poll, wait for all VMs | skip |
-| `--phase 3` (default) | disable HA (all), cordon | drain + shutdown k8s VMs | shutdown non-k8s VMs | set flags | poll, **poweroff hosts** | poweroff orchestrator |
+| `--phase 3` (default) | disable HA (all), cordon | drain + shutdown k8s VMs | shutdown non-k8s VMs | set flags | poll, **poweroff hosts** (unless `--skip-poweroff`) | poweroff orchestrator (unless `--skip-poweroff` or orchestrator not in `--hosts`) |
 
 Notes:
 - Phase 1 issues `styx-vm-shutdown` for k8s VMs (fire-and-forget). Does **not** wait for them to stop. HA is disabled for k8s VMIDs only — non-k8s VMs are not touched in phase 1 so their HA resources are left alone.
@@ -387,6 +400,8 @@ The primary use case is post-mortem analysis after a UPS-triggered shutdown. Whe
 
 ## Startup Recovery (Manual)
 
+> **Tip:** styx logs an exact startup checklist before powering off the orchestrator — check `/var/log/styx.log` for the `--- Shutdown complete — startup checklist ---` entry. For `--hosts` partial runs, a revert checklist is logged at the end of the run instead.
+
 After power is restored:
 
 1. **Power on Proxmox hosts** (manually or via IPMI/iLO)
@@ -464,12 +479,17 @@ test/
 │       ├── volume_attachments.json
 │       └── volume_attachments_stale.json
 ├── unit/
-│   ├── test_config.py                # INI parsing
-│   ├── test_discover.py              # pvesh/kubectl JSON parsing, name matching
-│   ├── test_classify.py              # VMID classification
-│   ├── test_decide.py                # phase predicates
-│   ├── test_k8s.py                   # K8sClient (cordon, drain, mirror pods, etc.)
-│   └── test_policy.py                # DryRunPolicy, Policy, MaintenancePolicy
+│   ├── test_config.py                    # INI parsing
+│   ├── test_discover.py                  # pvesh/kubectl JSON parsing, name matching
+│   ├── test_classify.py                  # VMID classification
+│   ├── test_decide.py                    # phase predicates
+│   ├── test_k8s.py                       # K8sClient (cordon, drain, mirror pods, etc.)
+│   ├── test_policy.py                    # DryRunPolicy, Policy, MaintenancePolicy
+│   ├── test_vm_shutdown.py               # QMP mock server, PID escalation, check()
+│   ├── test_wrappers_parsing.py          # _parse_ha_status, _parse_running_vmids, Operations commands
+│   ├── test_orchestrate_discover.py      # discover() with injected pvesh/pveceph fns
+│   ├── test_orchestrate_preflight.py     # preflight() SSH, k8s, Ceph checks
+│   └── test_orchestrate_hosts_filter.py  # _apply_hosts_filter()
 └── integration/
     ├── helpers.py                    # FakeOperations + fake VM (sleep + PID files)
     └── test_full_sequence.py         # end-to-end with injected fakes
@@ -521,13 +541,30 @@ ops.get_ha_started_sids()                      # ha-manager status -> started SI
 ops.disable_ha_sid(sid)                        # ha-manager set --state disabled
 ops.wait_ha_disabled(sid, timeout) -> bool     # poll until disabled or timeout
 ops.set_ceph_flags(flags)                      # ceph osd set <flag> for each flag
-ops.poweroff_host(host)                        # ssh root@<ip> poweroff
+ops.push_executable(host)                      # scp .pyz to peer via SSH stdin pipe; no-op in dev/source mode
+ops.check_vm(host, vmid)                       # vm-shutdown --dry-run (sync); used in dry-run mode
+ops.run_on_host(host, cmd)                     # SSH or local bash
+ops.get_running_vmids(host)                    # scan PID files on a host
+ops.shutdown_vm(host, vmid, timeout)           # nohup styx vm-shutdown (fire-and-forget; logs to /tmp/styx-vm-{vmid}.log)
+ops.cordon_node(node)                          # kubectl cordon via K8sClient
+ops.drain_node(node, timeout) -> bool          # kubectl drain via K8sClient
+ops.list_volume_attachments_for_node(node)     # CSI VolumeAttachment check post-drain
+ops.get_ha_started_sids()                      # ha-manager status -> started SIDs
+ops.disable_ha_sid(sid)                        # ha-manager set --state disabled
+ops.wait_ha_disabled(sid, timeout) -> bool     # poll until disabled or timeout
+ops.set_ceph_flags(flags)                      # ceph osd set <flag> for each flag
+ops.poweroff_host(host)                        # ssh: collect vm-shutdown logs then poweroff
 ops.poweroff_self()                            # poweroff (orchestrator self)
 ```
 
 **Layer 3 — Orchestration** (`styx/orchestrate.py`):
 
 `main()` accepts `_discover_fn` and `_ops_factory` as keyword-only parameters for test injection.
+
+Key helpers:
+- `_apply_hosts_filter(topo, hosts)` — restricts topology to targeted hosts; orchestrator always kept reachable but its VMs only included if explicitly listed
+- `_log_revert_summary(topo, args, ceph_flags)` — logged at end of `--hosts` runs with exact commands to restore cluster state
+- `_log_startup_checklist(topo, ceph_flags)` — logged before `poweroff_self` in full runs with post-restart commands
 
 **Policy** (`styx/policy.py`):
 
@@ -616,10 +653,10 @@ def test_dry_run_no_side_effects(self):
 
 | Concern | Mitigation |
 |---------|------------|
-| QMP socket communication | Manual test on Proxmox; `--mode dry-run` shows planned actions |
+| QMP socket communication | Covered by `test_vm_shutdown.py` with a Unix-socket mock server; also test on Proxmox |
 | kubectl drain behavior | `--mode dry-run --phase 1` on real cluster |
-| SSH connectivity | `--mode maintenance` pre-flight checks SSH reachability |
-| Ceph OSD flag behavior | Idempotent, safe to test live |
+| SSH connectivity | `--mode maintenance` pre-flight checks SSH reachability; `--hosts` partial run exercises real SSH |
+| Ceph OSD flag behavior | Idempotent, safe to test live; `--hosts` partial run uses `noout` only |
 | ha-manager interaction | `--mode dry-run`, verify manually |
 | Actual VM shutdown timing | Tune timeouts based on observation |
 

@@ -55,6 +55,7 @@ Both subcommands (`orchestrate` and `vm-shutdown`) are bundled in the single `st
 
 ```
 styx.pyz orchestrate [--mode <mode>] [--phase <1|2|3>] [--config <path>]
+                     [--hosts HOST [HOST ...]] [--skip-poweroff]
 
 Modes:
   emergency    Execute automatically, warn and continue on failures (default)
@@ -62,8 +63,10 @@ Modes:
   dry-run      Log all planned actions without executing anything
 
 Options:
-  --phase <1|2|3>  Execute up to and including this phase (default: 3)
-  --config <path>  Config file path (default: /etc/styx/styx.conf)
+  --phase <1|2|3>        Execute up to and including this phase (default: 3)
+  --config <path>        Config file path (default: /etc/styx/styx.conf)
+  --hosts HOST [HOST ...]  Restrict to these hosts only (orchestrator always included)
+  --skip-poweroff        Shut down VMs but do not power off any host
 ```
 
 Typical invocations:
@@ -83,6 +86,12 @@ styx.pyz orchestrate --phase 1
 
 # Re-run phase 3 after a partial shutdown (k8s already down)
 styx.pyz orchestrate --phase 3
+
+# Partial run: test shutdown sequence on one host without touching the rest
+styx.pyz orchestrate --mode maintenance --hosts pve3 --skip-poweroff
+
+# Same but also power off pve3 at the end
+styx.pyz orchestrate --mode maintenance --hosts pve3
 ```
 
 ### Modes
@@ -93,7 +102,32 @@ styx.pyz orchestrate --phase 3
 
 Both modes execute identical code paths, making maintenance mode a reliable way to exercise the emergency path against a real cluster.
 
-**Dry-run** logs every planned action with a `[dry-run]` prefix and skips execution entirely. Useful for verifying auto-discovery results and checking what styx would do.
+**Dry-run** logs every planned action with a `[dry-run]` prefix and skips execution entirely. It also runs preflight checks and invokes `vm-shutdown --dry-run` on each peer to report real VM running status — making it as close to a real run as possible without modifying any state.
+
+### Testing on a live cluster
+
+The recommended progression before a first real run:
+
+| Step | Command | What it validates |
+|------|---------|------------------|
+| 1 | `--mode dry-run` | Discovery, sequencing, SSH reachability, real VM status on all peers |
+| 2 | `--mode maintenance --hosts pve3 --skip-poweroff` | Full VM shutdown sequence on one host; nothing powered off |
+| 3 | `--mode maintenance --hosts pve3` | Same, plus power off pve3 (reboot manually to restore) |
+| 4 | Full run | The real thing |
+
+Choose a host with no critical services for the partial test (avoid the sole control-plane node or the host running all Ceph MONs if possible). At the end of every `--hosts` run, styx logs a **revert checklist** with the exact commands needed to restore normal cluster state:
+
+```
+--- Partial run complete — revert checklist ---
+  Ceph OSD flags set: noout
+    → ceph osd unset noout
+  k8s nodes cordoned: k8s-cp-1
+    → kubectl uncordon k8s-cp-1
+  VM(s) stopped (host NOT powered off): 301 302
+    → qm start 301 302
+```
+
+Note: restarting VMs, re-enabling HA, and uncordoning nodes is the operator's responsibility. Styx does not auto-revert.
 
 ## Configuration
 
@@ -114,6 +148,10 @@ pve3 = 192.168.1.12
 [kubernetes]
 workers = 211, 212, 213
 control_plane = 201, 202, 203
+
+# Override Ceph flags for partial --hosts runs (default: noout only)
+[ceph]
+partial_flags = noout
 
 # Adjust timeouts (seconds)
 [timeouts]
@@ -138,6 +176,8 @@ All actions are logged to both stdout and `/var/log/styx.log` with timestamps. E
 ## Recovery
 
 After power is restored:
+
+> **Tip:** styx logs an exact startup checklist before powering off the orchestrator — check `/var/log/styx.log` for the `--- Shutdown complete — startup checklist ---` entry to get the precise commands for your run.
 
 1. Boot Proxmox hosts (via IPMI/iLO or physically)
 2. Unset Ceph OSD flags: `for f in noout norecover norebalance nobackfill nodown; do ceph osd unset $f; done`
