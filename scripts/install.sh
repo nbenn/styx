@@ -3,10 +3,12 @@
 # install.sh — Install styx.pyz on all Proxmox cluster nodes.
 #
 # Usage: install.sh [--hosts HOST ...] [--pyz PATH] [--install-dir DIR] [--update-self]
+#                   [--sync-config]
 #   --pyz PATH        Use a local .pyz file instead of downloading from GitHub
 #   --hosts HOST      Explicit host list (repeatable); default: auto-discover via pvesh
 #   --install-dir DIR Install to DIR/styx.pyz (default: /opt/styx)
 #   --update-self     Replace this script with the latest release from GitHub, then exit
+#   --sync-config     Sync all config files in INSTALL_DIR (except styx.pyz) to peers
 #
 # Downloads the latest styx.pyz from GitHub releases (unless --pyz is given),
 # then copies it to /opt/styx/styx.pyz on every node. Re-runnable for upgrades.
@@ -22,6 +24,7 @@ pyz=""
 hosts=()
 update_self=false
 install_dir=""
+sync_config=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -37,8 +40,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --update-self)
             update_self=true; shift ;;
+        --sync-config)
+            sync_config=true; shift ;;
         -h|--help)
-            sed -n '3,10s/^# //p' "$0"
+            sed -n '3,11s/^# //p' "$0"
             exit 0
             ;;
         *)
@@ -181,6 +186,37 @@ done
 if [[ $fail -ne 0 ]]; then
     echo "Some nodes failed verification." >&2
     exit 1
+fi
+
+# ── Sync config files ────────────────────────────────────────────────────────
+
+if $sync_config; then
+    mapfile -t config_files < <(
+        find "$INSTALL_DIR" -maxdepth 1 -type f ! -name 'styx.pyz' -printf '%f\n'
+    )
+
+    if [[ ${#config_files[@]} -eq 0 ]]; then
+        echo "No config files found in ${INSTALL_DIR} to sync."
+    else
+        echo "Syncing config files: ${config_files[*]}"
+        for name in "${!host_ips[@]}"; do
+            ip="${host_ips[$name]}"
+
+            if [[ "$name" == "$local_hostname" ]]; then
+                echo "  ${name} (local): skipping, files already in place"
+                continue
+            fi
+
+            for cfg in "${config_files[@]}"; do
+                src="${INSTALL_DIR}/${cfg}"
+                perms="$(stat -c '%a' "$src")"
+                echo "  ${name}: syncing ${cfg}..."
+                ssh -o ConnectTimeout=5 -o BatchMode=yes "root@${ip}" \
+                    "cat > ${INSTALL_DIR}/${cfg} && chmod ${perms} ${INSTALL_DIR}/${cfg}" \
+                    < "$src"
+            done
+        done
+    fi
 fi
 
 echo "Done. styx installed at ${INSTALL_PATH} on all nodes."
