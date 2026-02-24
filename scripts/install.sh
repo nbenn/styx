@@ -50,6 +50,11 @@ fi
 
 trap '[ -n "$cleanup_tmp" ] && rm -f "$cleanup_tmp"' EXIT
 
+# ── Report version ────────────────────────────────────────────────────────────
+
+version="$(python3 "$pyz" --version 2>/dev/null)" || version="unknown"
+echo "Installing styx ${version}"
+
 # ── Discover hosts ────────────────────────────────────────────────────────────
 
 if [[ ${#hosts[@]} -eq 0 ]]; then

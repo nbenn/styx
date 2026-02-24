@@ -4,6 +4,11 @@ import sys
 
 
 def main():
+    if len(sys.argv) >= 2 and sys.argv[1] == '--version':
+        from styx import __version__
+        print(__version__)
+        sys.exit(0)
+
     if len(sys.argv) < 2 or sys.argv[1] in ('-h', '--help'):
         print('Usage: python3 -m styx <orchestrate|vm-shutdown|local-shutdown> [args...]',
               file=sys.stderr)
