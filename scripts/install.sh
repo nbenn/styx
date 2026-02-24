@@ -2,9 +2,10 @@
 #
 # install.sh — Install styx.pyz on all Proxmox cluster nodes.
 #
-# Usage: install.sh [--hosts HOST ...] [--pyz PATH]
-#   --pyz PATH    Use a local .pyz file instead of downloading from GitHub
-#   --hosts HOST  Explicit host list (repeatable); default: auto-discover via pvesh
+# Usage: install.sh [--hosts HOST ...] [--pyz PATH] [--update-self]
+#   --pyz PATH      Use a local .pyz file instead of downloading from GitHub
+#   --hosts HOST    Explicit host list (repeatable); default: auto-discover via pvesh
+#   --update-self   Replace this script with the latest release from GitHub, then exit
 #
 # Downloads the latest styx.pyz from GitHub releases (unless --pyz is given),
 # then copies it to /opt/styx/styx.pyz on every node. Re-runnable for upgrades.
@@ -13,10 +14,11 @@ set -euo pipefail
 
 INSTALL_DIR="/opt/styx"
 INSTALL_PATH="${INSTALL_DIR}/styx.pyz"
-DOWNLOAD_URL="https://github.com/nbenn/styx/releases/latest/download/styx.pyz"
+RELEASE_BASE="https://github.com/nbenn/styx/releases/latest/download"
 
 pyz=""
 hosts=()
+update_self=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -28,14 +30,28 @@ while [[ $# -gt 0 ]]; do
                 hosts+=("$1"); shift
             done
             ;;
+        --update-self)
+            update_self=true; shift ;;
         -h|--help)
-            sed -n '3,9s/^# //p' "$0"
+            sed -n '3,10s/^# //p' "$0"
             exit 0
             ;;
         *)
             echo "Unknown option: $1" >&2; exit 1 ;;
     esac
 done
+
+# ── Self-update ──────────────────────────────────────────────────────────────
+
+if $update_self; then
+    self="$(readlink -f "$0")"
+    echo "Downloading latest install.sh from GitHub releases..."
+    curl -fSL "${RELEASE_BASE}/install.sh" -o "${self}.tmp"
+    chmod +x "${self}.tmp"
+    mv "${self}.tmp" "$self"
+    echo "Updated ${self}"
+    exit 0
+fi
 
 # ── Obtain .pyz ───────────────────────────────────────────────────────────────
 
@@ -44,7 +60,7 @@ if [[ -z "$pyz" ]]; then
     tmp="$(mktemp)"
     cleanup_tmp="$tmp"
     echo "Downloading styx.pyz from GitHub releases..."
-    curl -fSL "$DOWNLOAD_URL" -o "$tmp"
+    curl -fSL "${RELEASE_BASE}/styx.pyz" -o "$tmp"
     pyz="$tmp"
 fi
 
