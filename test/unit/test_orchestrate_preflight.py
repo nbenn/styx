@@ -6,7 +6,7 @@ from unittest import mock
 
 from styx.config import StyxConfig
 from styx.discover import ClusterTopology
-from styx.orchestrate import preflight
+from styx.orchestrate import preflight, _log_runtime_budget
 
 
 def _topo(**kwargs):
@@ -171,6 +171,48 @@ class TestPreflightCeph(unittest.TestCase):
 
         with mock.patch('styx.orchestrate.subprocess.run', side_effect=_run):
             preflight(_topo(ceph_enabled=True), _cfg())   # must not raise
+
+
+# ── Runtime Budget ───────────────────────────────────────────────────────────
+
+class TestRuntimeBudget(unittest.TestCase):
+
+    @mock.patch('styx.orchestrate.log')
+    def test_includes_drain_and_vm_shutdown(self, mock_log):
+        topo = _topo(k8s_enabled=True, k8s_workers=['211'], k8s_cp=['201'],
+                     vm_host={'211': 'pve2', '201': 'pve3'})
+        _log_runtime_budget(topo, _cfg(timeout_drain=120, timeout_vm=120), phase=3)
+        msgs = [c.args[0] for c in mock_log.call_args_list]
+        self.assertTrue(any('120s' in m and 'drain' in m for m in msgs))
+        self.assertTrue(any('135s' in m and 'VM' in m for m in msgs))
+        self.assertTrue(any('4m 25s' in m for m in msgs))
+
+    @mock.patch('styx.orchestrate.log')
+    def test_no_k8s_omits_drain(self, mock_log):
+        topo = _topo(k8s_enabled=False,
+                     vm_host={'101': 'pve1'})
+        _log_runtime_budget(topo, _cfg(timeout_vm=120), phase=3)
+        msgs = [c.args[0] for c in mock_log.call_args_list]
+        self.assertFalse(any('drain' in m for m in msgs))
+        self.assertTrue(any('135s' in m and 'VM' in m for m in msgs))
+        self.assertTrue(any('2m 25s' in m for m in msgs))
+
+    @mock.patch('styx.orchestrate.log')
+    def test_phase1_no_vm_wait(self, mock_log):
+        topo = _topo(k8s_enabled=True, k8s_workers=['211'], k8s_cp=['201'],
+                     vm_host={'211': 'pve2', '201': 'pve3'})
+        _log_runtime_budget(topo, _cfg(timeout_drain=60, timeout_vm=120), phase=1)
+        msgs = [c.args[0] for c in mock_log.call_args_list]
+        self.assertTrue(any('60s' in m and 'drain' in m for m in msgs))
+        self.assertTrue(any('fire-and-forget' in m for m in msgs))
+        self.assertTrue(any('1m 00s' in m for m in msgs))
+
+    @mock.patch('styx.orchestrate.log')
+    def test_no_vms_shows_zero(self, mock_log):
+        topo = _topo(k8s_enabled=False, vm_host={})
+        _log_runtime_budget(topo, _cfg(), phase=3)
+        msgs = [c.args[0] for c in mock_log.call_args_list]
+        self.assertTrue(any('0m 00s' in m for m in msgs))
 
 
 if __name__ == '__main__':

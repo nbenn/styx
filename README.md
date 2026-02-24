@@ -98,7 +98,7 @@ styx.pyz orchestrate --mode maintenance --hosts pve3
 
 **Emergency** (default) is designed for unattended UPS-triggered shutdowns: every step logs a warning on failure and moves on, with no human in the loop.
 
-**Maintenance** is for planned shutdowns. Before touching anything it runs a pre-flight check — SSH reachability to all hosts, Kubernetes API status with per-node drain estimates, and Ceph health — and displays the results. It then prompts for confirmation before proceeding. Any warning during execution (drain timeout, stale VolumeAttachment, etc.) pauses and asks whether to skip or abort. A second confirmation gate sits before the final host powerdown.
+**Maintenance** is for planned shutdowns. Before touching anything it runs a pre-flight check — SSH reachability to all hosts, Kubernetes API status with per-node drain estimates, Ceph health, and a worst-case runtime budget based on your configured timeouts — and displays the results. It then prompts for confirmation before proceeding. Any warning during execution (drain timeout, stale VolumeAttachment, etc.) pauses and asks whether to skip or abort. A second confirmation gate sits before the final host powerdown.
 
 Both modes execute identical code paths, making maintenance mode a reliable way to exercise the emergency path against a real cluster.
 

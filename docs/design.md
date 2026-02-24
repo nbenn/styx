@@ -286,9 +286,10 @@ STARTUP:
 
 PARALLEL TRACKS (phases 1+2 run concurrently):
   Track A (k8s):
-    worker VMs:       [drain all workers in parallel] -> [styx-vm-shutdown <vmid> &] (parallel per worker)
-    ...all workers drained...
-    CP VMs:           [drain all CP in parallel] -> [styx-vm-shutdown <vmid> &] (parallel per CP node)
+    all nodes:        [drain workers + CP in parallel]
+    as each worker drains:  [styx-vm-shutdown <vmid> &] (fire-and-forget)
+    ...all drains complete (barrier)...
+    CP VMs:           [styx-vm-shutdown <vmid> &] (fire-and-forget, after barrier)
 
   Track B (non-k8s VMs, starts at the same time as Track A):
     non-k8s VMs:      [ssh <host> styx-vm-shutdown <vmid> &] (parallel)
@@ -376,12 +377,68 @@ The script is safe to re-run (e.g., `--phase 1` followed by `--phase 3`):
 | `ceph osd set noout` | Already set | No-op |
 | `ssh root@<ip> poweroff` | Host already off | SSH refused, logged, continues |
 
-### Timeouts
+### Runtime Budget
 
-| Timeout | Default | Purpose |
-|---------|---------|---------|
-| Drain | 120s per node | Max time for `kubectl drain` |
-| VM shutdown | 120s per VM | Graceful wait before SIGTERM -> SIGKILL |
+Many operations run in parallel, so the worst-case formula is simpler than the number of individual timeouts suggests.
+
+#### Phase structure
+
+```
+sequential:  HA disable → drain → VM shutdown wait → polling
+parallel:    all k8s drains run concurrently
+             all VM shutdowns run concurrently (fire-and-forget)
+             Track A (k8s) and Track B (non-k8s) run concurrently
+```
+
+#### Worst-case formula (phase 3)
+
+| Step | Duration | Notes |
+|------|----------|-------|
+| HA disable | N × 30s | Sequential per resource; usually completes in < 5s each |
+| k8s drain | `timeout_drain` | All nodes drain in parallel; single shared timeout |
+| VM shutdown + escalation | `timeout_vm` + 15s | ACPI wait + SIGTERM 10s + SIGKILL 5s |
+| Polling detection | `poll_interval` | One cycle to detect completion |
+
+```
+worst_case = timeout_drain + timeout_vm + 15 + poll_interval
+```
+
+With defaults (drain=120, vm=120, poll=10): **4m 25s** (excluding HA disable, which is topology-dependent).
+
+Without Kubernetes (no drain phase): `timeout_vm + 15 + poll_interval` = **2m 25s**.
+
+Why drain and VM shutdown are sequential: CP VM shutdowns are deferred until after all drains complete (the API server must remain available for drain evictions). The last VM shutdown is therefore dispatched at time `timeout_drain`, and the polling loop waits up to `timeout_vm + 15` seconds after that.
+
+Worker VMs and non-k8s VMs begin shutting down earlier (during or before the drain phase), so they overlap with the drain time and are never the bottleneck.
+
+#### Preflight display
+
+In `maintenance` and `dry-run` modes, styx calculates and displays the worst-case runtime before the confirmation prompt:
+
+```
+--- Runtime budget (worst case) ---
+  k8s drain (all nodes parallel): 120s
+  VM shutdown + escalation: 135s
+  Polling detection: 10s
+  Total: 4m 25s
+```
+
+This gives the admin a concrete number to compare against their UPS battery estimate before confirming.
+
+#### All timeouts
+
+| Timeout | Default | Configurable | Purpose |
+|---------|---------|-------------|---------|
+| `timeout_drain` | 120s | `[timeouts] drain` | Max time for `kubectl drain` per node (all nodes drain in parallel) |
+| `timeout_vm` | 120s | `[timeouts] vm` | ACPI graceful shutdown wait per VM |
+| SIGTERM grace | 10s | No | Grace period after SIGTERM before SIGKILL |
+| SIGKILL grace | 5s | No | Final check after SIGKILL |
+| HA transition | 30s | No | Wait for `ha-manager set --state disabled` per resource |
+| Poll interval | 10s | `STYX_POLL_INTERVAL` env var | Polling loop sleep between VM status checks |
+| K8s drain poll | 2s | No | Sleep between pod eviction checks during drain |
+| K8s API timeout | 10s | No | HTTP timeout for Kubernetes API calls |
+| SSH command timeout | 30s | No | Subprocess timeout for SSH commands |
+| QMP socket timeout | 5s | No | QMP socket connect/recv timeout |
 
 Each backgrounded `styx-vm-shutdown` handles its own timeout and force-kill escalation. The polling loop only observes status — it doesn't manage timeouts.
 

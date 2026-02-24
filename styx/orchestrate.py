@@ -113,6 +113,10 @@ def discover(config, *, _pvesh_fn=None, _pveceph_fn=None, _on_warning=None):
     return topo
 
 
+# Fixed escalation overhead in vm_shutdown.py: SIGTERM(10s) + SIGKILL(5s)
+_VM_ESCALATION_OVERHEAD = 15
+
+
 # ── hosts filter ─────────────────────────────────────────────────────────────
 
 def _apply_hosts_filter(topo, hosts):
@@ -186,6 +190,32 @@ def preflight(topo, config):
             log(f'Ceph: {r.stdout.strip() or r.stderr.strip()}')
         except Exception as e:
             log(f'Ceph: unavailable ({e})')
+
+
+def _log_runtime_budget(topo, config, phase):
+    """Calculate and display worst-case runtime budget."""
+    log('--- Runtime budget (worst case) ---')
+
+    total = 0
+    has_k8s = topo.k8s_enabled and (topo.k8s_workers or topo.k8s_cp)
+    has_vms = bool(topo.vm_host)
+
+    if has_k8s:
+        log(f'  k8s drain (all nodes parallel): {config.timeout_drain}s')
+        total += config.timeout_drain
+
+    if has_vms and phase >= 2:
+        vm_s = config.timeout_vm + _VM_ESCALATION_OVERHEAD
+        log(f'  VM shutdown + escalation: {vm_s}s')
+        total += vm_s
+        poll_s = int(os.environ.get('STYX_POLL_INTERVAL', '10'))
+        log(f'  Polling detection: {poll_s}s')
+        total += poll_s
+    elif has_vms:
+        log(f'  VM shutdown: fire-and-forget (background, not awaited in phase 1)')
+
+    mins, secs = divmod(total, 60)
+    log(f'  Total: {mins}m {secs:02d}s')
 
 
 # ── HA ────────────────────────────────────────────────────────────────────────
@@ -458,6 +488,7 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None):
 
     if args.mode in ('maintenance', 'dry-run'):
         preflight(topo, config)
+        _log_runtime_budget(topo, config, args.phase)
     policy.phase_gate(
         f'{len(topo.host_ips)} host(s), {len(topo.vm_host)} VM(s)'
         + (f', k8s workers={topo.k8s_workers} cp={topo.k8s_cp}' if topo.k8s_enabled else '')
