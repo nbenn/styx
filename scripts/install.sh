@@ -13,7 +13,7 @@
 
 set -euo pipefail
 
-VERSION="0.1.1"
+VERSION="0.1.2"
 INSTALL_DIR="/opt/styx"
 INSTALL_PATH="${INSTALL_DIR}/styx.pyz"
 RELEASE_BASE="https://github.com/nbenn/styx/releases/latest/download"
