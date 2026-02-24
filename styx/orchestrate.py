@@ -18,8 +18,9 @@ from styx.discover import (
     match_nodes_to_vms,
 )
 from styx.config import DEFAULT_CEPH_FLAGS_PARTIAL
+from styx import __version__
 from styx.policy import Policy, DryRunPolicy, MaintenancePolicy, log, setup_log_file
-from styx.wrappers import Operations
+from styx.wrappers import Operations, _local_pyz, installed_pyz_path
 
 
 # ── external CLI helpers ──────────────────────────────────────────────────────
@@ -147,12 +148,14 @@ def _apply_hosts_filter(topo, hosts):
 # ── pre-flight (maintenance mode) ────────────────────────────────────────────
 
 def preflight(topo, config):
-    """Check SSH reachability, k8s API, and Ceph health before any action.
+    """Check SSH reachability, styx version, k8s API, and Ceph health.
 
-    Results are logged; the caller is responsible for any gate prompt.
+    Results are logged. A styx version mismatch or unreachable peer is fatal —
+    sys.exit(1) is called after logging all failures.
     """
     log('--- Pre-flight ---')
 
+    reachable = set()
     for host, ip in topo.host_ips.items():
         if host == topo.orchestrator:
             continue
@@ -163,8 +166,42 @@ def preflight(topo, config):
                 capture_output=True, timeout=10, check=True,
             )
             log(f'SSH {host} ({ip}): OK')
+            reachable.add((host, ip))
         except Exception as e:
             log(f'SSH {host} ({ip}): UNREACHABLE ({e})')
+
+    # styx version check — only when running as a zipapp
+    if _local_pyz():
+        styx_failures = []
+        unreachable_count = (
+            len(topo.host_ips) - 1 - len(reachable)   # -1 for orchestrator
+        )
+        for host, ip in reachable:
+            cmd = f'python3 {installed_pyz_path()} --version'
+            try:
+                r = subprocess.run(
+                    ['ssh', '-o', 'ConnectTimeout=5', '-o', 'BatchMode=yes',
+                     f'root@{ip}', cmd],
+                    capture_output=True, text=True, timeout=30, check=True,
+                )
+                remote_version = r.stdout.strip()
+                if remote_version == __version__:
+                    log(f'styx {host}: OK (v{remote_version})')
+                else:
+                    log(f'styx {host}: VERSION MISMATCH '
+                        f'(local={__version__}, remote={remote_version})')
+                    styx_failures.append(host)
+            except Exception as e:
+                log(f'styx {host}: NOT AVAILABLE ({e})')
+                styx_failures.append(host)
+
+        total_failures = len(styx_failures) + unreachable_count
+        if total_failures:
+            import sys as _sys
+            _sys.exit(
+                f'FATAL: styx version check failed on {total_failures} host(s) '
+                f'— cannot proceed'
+            )
 
     if topo.k8s_enabled and config.k8s_server and config.k8s_token:
         try:

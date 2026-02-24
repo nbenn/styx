@@ -27,6 +27,11 @@ def _local_pyz():
     return argv0 if argv0.endswith('.pyz') else None
 
 
+def installed_pyz_path():
+    """Return the path where styx.pyz is installed on peer hosts."""
+    return _INSTALLED_PYZ
+
+
 def _styx_cmd():
     """Return the invocation prefix for styx subcommands run in subprocesses.
 

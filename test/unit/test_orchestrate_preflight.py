@@ -1,6 +1,7 @@
 """Unit tests for orchestrate.preflight()."""
 
 import subprocess
+import sys
 import unittest
 from unittest import mock
 
@@ -214,6 +215,133 @@ class TestRuntimeBudget(unittest.TestCase):
         _log_runtime_budget(topo, _cfg(), phase=3)
         msgs = [c.args[0] for c in mock_log.call_args_list]
         self.assertTrue(any('0m 00s' in m for m in msgs))
+
+
+# ── Styx version check ───────────────────────────────────────────────────────
+
+def _ssh_side_effect(reachable_ips=None, version_stdout='0.1.0',
+                     version_fail_ips=None):
+    """Build a subprocess.run side_effect for SSH + styx --version calls.
+
+    reachable_ips:    set of IPs whose SSH reachability succeeds (default: all)
+    version_stdout:   stdout returned by the --version SSH call
+    version_fail_ips: set of IPs whose --version call raises CalledProcessError
+    """
+    version_fail_ips = version_fail_ips or set()
+
+    def handler(cmd, **kwargs):
+        r = mock.MagicMock(stdout='', stderr='', returncode=0)
+        if cmd[0] != 'ssh':
+            return r
+        target = cmd[5]  # 'root@IP'
+        ip = target.split('@')[1]
+        remote_cmd = cmd[6]  # 'exit' or 'python3 ... --version'
+        if remote_cmd == 'exit':
+            if reachable_ips is not None and ip not in reachable_ips:
+                raise subprocess.CalledProcessError(255, 'ssh')
+            return r
+        # --version call
+        if ip in version_fail_ips:
+            raise subprocess.CalledProcessError(127, 'ssh')
+        r.stdout = version_stdout + '\n'
+        return r
+    return handler
+
+
+class TestPreflightStyx(unittest.TestCase):
+
+    @mock.patch('styx.orchestrate._local_pyz', return_value='/opt/styx/styx.pyz')
+    @mock.patch('styx.orchestrate.__version__', '0.1.0')
+    def test_styx_version_match_ok(self, _mock_pyz):
+        """Peer returns matching version → no abort."""
+        topo = _topo(host_ips={'pve1': '10.0.0.1', 'pve2': '10.0.0.2'},
+                     orchestrator='pve1')
+        with mock.patch('styx.orchestrate.subprocess.run',
+                        side_effect=_ssh_side_effect(version_stdout='0.1.0')):
+            preflight(topo, _cfg())  # must not raise
+
+    @mock.patch('styx.orchestrate._local_pyz', return_value='/opt/styx/styx.pyz')
+    @mock.patch('styx.orchestrate.__version__', '0.1.0')
+    def test_styx_version_mismatch_aborts(self, _mock_pyz):
+        """Peer returns different version → SystemExit."""
+        topo = _topo(host_ips={'pve1': '10.0.0.1', 'pve2': '10.0.0.2'},
+                     orchestrator='pve1')
+        with mock.patch('styx.orchestrate.subprocess.run',
+                        side_effect=_ssh_side_effect(version_stdout='0.0.9')):
+            with self.assertRaises(SystemExit):
+                preflight(topo, _cfg())
+
+    @mock.patch('styx.orchestrate._local_pyz', return_value='/opt/styx/styx.pyz')
+    @mock.patch('styx.orchestrate.__version__', '0.1.0')
+    def test_styx_not_available_aborts(self, _mock_pyz):
+        """SSH command for --version fails → SystemExit."""
+        topo = _topo(host_ips={'pve1': '10.0.0.1', 'pve2': '10.0.0.2'},
+                     orchestrator='pve1')
+        with mock.patch('styx.orchestrate.subprocess.run',
+                        side_effect=_ssh_side_effect(
+                            version_fail_ips={'10.0.0.2'})):
+            with self.assertRaises(SystemExit):
+                preflight(topo, _cfg())
+
+    @mock.patch('styx.orchestrate._local_pyz', return_value='/opt/styx/styx.pyz')
+    @mock.patch('styx.orchestrate.__version__', '0.1.0')
+    def test_styx_check_skips_orchestrator(self, _mock_pyz):
+        """Orchestrator is never version-checked via SSH."""
+        topo = _topo(host_ips={'pve1': '10.0.0.1', 'pve2': '10.0.0.2'},
+                     orchestrator='pve1')
+        with mock.patch('styx.orchestrate.subprocess.run',
+                        side_effect=_ssh_side_effect(
+                            version_stdout='0.1.0')) as m:
+            preflight(topo, _cfg())
+        # Only pve2's IP should appear in --version calls, not pve1's
+        version_targets = [
+            c.args[0][5] for c in m.call_args_list
+            if c.args and c.args[0][0] == 'ssh' and '--version' in c.args[0][6]
+        ]
+        self.assertNotIn('root@10.0.0.1', version_targets)
+        self.assertIn('root@10.0.0.2', version_targets)
+
+    @mock.patch('styx.orchestrate._local_pyz', return_value='/opt/styx/styx.pyz')
+    @mock.patch('styx.orchestrate.__version__', '0.1.0')
+    def test_styx_check_skips_unreachable_hosts(self, _mock_pyz):
+        """SSH-failed hosts are skipped for version check but count as failures."""
+        topo = _topo(host_ips={'pve1': '10.0.0.1', 'pve2': '10.0.0.2',
+                               'pve3': '10.0.0.3'},
+                     orchestrator='pve1')
+        # pve3 unreachable, pve2 reachable with matching version
+        with mock.patch('styx.orchestrate.subprocess.run',
+                        side_effect=_ssh_side_effect(
+                            reachable_ips={'10.0.0.2'},
+                            version_stdout='0.1.0')):
+            with self.assertRaises(SystemExit):
+                preflight(topo, _cfg())
+
+    @mock.patch('styx.orchestrate._local_pyz', return_value=None)
+    def test_styx_check_skipped_when_not_zipapp(self, _mock_pyz):
+        """_local_pyz() returns None → no version check at all."""
+        topo = _topo(host_ips={'pve1': '10.0.0.1', 'pve2': '10.0.0.2'},
+                     orchestrator='pve1')
+        with mock.patch('styx.orchestrate.subprocess.run') as m:
+            preflight(topo, _cfg())  # must not raise
+        # No --version SSH calls should have been made
+        version_calls = [
+            c for c in m.call_args_list
+            if c.args and c.args[0][0] == 'ssh' and '--version' in c.args[0][-1]
+        ]
+        self.assertEqual(version_calls, [])
+
+    @mock.patch('styx.orchestrate._local_pyz', return_value='/opt/styx/styx.pyz')
+    @mock.patch('styx.orchestrate.__version__', '0.1.0')
+    def test_ssh_failure_still_aborts_due_to_unreachable(self, _mock_pyz):
+        """An SSH-unreachable host triggers abort even though styx check
+        was skipped for it (counted via unreachable_count)."""
+        topo = _topo(host_ips={'pve1': '10.0.0.1', 'pve2': '10.0.0.2'},
+                     orchestrator='pve1')
+        # pve2 is unreachable at SSH level
+        with mock.patch('styx.orchestrate.subprocess.run',
+                        side_effect=_ssh_side_effect(reachable_ips=set())):
+            with self.assertRaises(SystemExit):
+                preflight(topo, _cfg())
 
 
 if __name__ == '__main__':

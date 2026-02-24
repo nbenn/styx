@@ -283,6 +283,7 @@ Three mutually exclusive modes, implemented as three `Policy` subclasses in `sty
 
 Before touching anything, `preflight()` runs and logs:
 - SSH reachability to every non-orchestrator host
+- `styx --version` on each reachable peer (only when running as zipapp) — version mismatch, missing install, or unreachable host is **fatal** (`sys.exit(1)`), since peers cannot execute styx commands. Emergency mode is unaffected (preflight never runs).
 - Kubernetes API status + per-node drainable pod count (drain load estimate)
 - Ceph health (`ceph health`)
 
@@ -295,6 +296,13 @@ Two phase gates prompt for confirmation:
 Any `on_warning()` call during execution (drain timeout, stale VolumeAttachment, SSH error) pauses and prompts `[skip/abort]`. A `threading.Lock` serialises concurrent prompts from parallel drain threads.
 
 Both modes run **identical code paths**. `Policy.phase_gate()` and `Policy.on_warning()` are no-ops in emergency mode. This is intentional — maintenance mode is the primary way to exercise the emergency path against a real cluster.
+
+**Maintainability invariant — all mutations must go through `policy.execute()`.**
+Dry-run safety depends on every cluster-mutating operation being wrapped in a `policy.execute(description, fn, *args)` call. There is no compile-time or runtime guard that prevents calling an `Operations` method (e.g. `ops.cordon_node()`, `ops.disable_ha_sid()`) directly — if a future code path bypasses `policy.execute()`, that mutation will fire even in dry-run mode. When adding new operations:
+
+1. Never call an `Operations` mutating method directly from orchestration code. Always wrap it: `policy.execute('description', ops.method, args)`.
+2. For code paths that branch on `policy.dry_run` explicitly (e.g. `run_polling_loop`, `_dispatch_independent_phase`), ensure the dry-run branch performs **no** mutations and returns early.
+3. Cover new operations in `test_dry_run_no_side_effects` (`test/integration/test_full_sequence.py`) to assert the operation log is empty under `DryRunPolicy`.
 
 ### Phases
 
