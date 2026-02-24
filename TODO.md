@@ -69,6 +69,13 @@ release artifact alongside `styx.pyz`.
 
 ## 5. Container support (LXC, OCI)
 
+**Infrastructure done.** Workload type (`vm_type`) is threaded through
+discovery, dispatch, CLI, and polling. `local_shutdown.py` uses dispatch maps
+(`_SHUTDOWN`/`_CHECK`) keyed by type. Adding a new workload type requires:
+1. Implement `ct_shutdown.py` (or `oci_shutdown.py`) with `shutdown()` / `check()`
+2. Register it in `local_shutdown._SHUTDOWN` / `_CHECK`
+3. Widen `parse_cluster_resources()` filter to include the new `type`
+
 ### 5a. Preflight warning (short-term)
 
 **Problem:** LXC (and with Proxmox 9.x, OCI) containers are silently ignored.

@@ -118,8 +118,9 @@ class FakeOperations:
             self.ceph_log.append(f'CEPH_FLAGS {" ".join(flags)}')
             self.sequence_log.append((next(self._seq), f'CEPH_FLAGS {" ".join(flags)}'))
 
-    def dispatch_local_shutdown(self, host, vmids, timeout_vm,
+    def dispatch_local_shutdown(self, host, workloads, timeout_vm,
                                 poweroff_delay=None, dry_run=False):
+        vmids = [vmid for _, vmid in workloads]
         entry = f'LOCAL_SHUTDOWN {host} vmids={",".join(sorted(vmids))}'
         with self._lock:
             self.shutdown_log.append(entry)

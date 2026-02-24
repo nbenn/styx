@@ -115,14 +115,15 @@ class Operations:
         except Exception as e:
             log(f'WARNING: shutdown_vm {vmid} on {host}: {e}')
 
-    def dispatch_local_shutdown(self, host, vmids, timeout_vm,
+    def dispatch_local_shutdown(self, host, workloads, timeout_vm,
                                 poweroff_delay=None, dry_run=False):
         """Dispatch a local-shutdown command to a peer host via SSH (nohup).
 
-        The peer will shut down all listed VMs in parallel and optionally
+        workloads: list of (type, vmid) tuples, e.g. [('qemu', '101')].
+        The peer will shut down all listed workloads in parallel and optionally
         power itself off after poweroff_delay seconds.
         """
-        args = ' '.join(vmids)
+        args = ' '.join(f'{wtype}:{vmid}' for wtype, vmid in workloads)
         cmd = f'{self._vm_prefix(host)} local-shutdown {args} --timeout {timeout_vm}'
         if poweroff_delay is not None:
             cmd += f' --poweroff-delay {poweroff_delay}'

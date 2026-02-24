@@ -212,5 +212,46 @@ class TestOperationsCheckVm(unittest.TestCase):
         )
 
 
+# ── Operations.dispatch_local_shutdown command construction ────────────────
+
+class TestOperationsDispatchLocalShutdown(unittest.TestCase):
+
+    def test_dispatch_uses_type_prefixed_format(self):
+        ops = Operations({'pve1': '10.0.0.1', 'pve2': '10.0.0.2'}, 'pve1')
+        with patch.object(sys, 'argv', ['styx/__main__.py']):
+            with patch.object(ops, 'run_on_host') as mock_run:
+                ops.dispatch_local_shutdown(
+                    'pve2', [('qemu', '101'), ('qemu', '201')],
+                    timeout_vm=120,
+                )
+        cmd = mock_run.call_args[0][1]
+        self.assertIn('qemu:101', cmd)
+        self.assertIn('qemu:201', cmd)
+        self.assertIn('local-shutdown', cmd)
+        self.assertIn('--timeout 120', cmd)
+
+    def test_dispatch_with_poweroff_delay(self):
+        ops = Operations({'pve1': '10.0.0.1', 'pve2': '10.0.0.2'}, 'pve1')
+        with patch.object(sys, 'argv', ['styx/__main__.py']):
+            with patch.object(ops, 'run_on_host') as mock_run:
+                ops.dispatch_local_shutdown(
+                    'pve2', [('qemu', '101')],
+                    timeout_vm=120, poweroff_delay=135,
+                )
+        cmd = mock_run.call_args[0][1]
+        self.assertIn('--poweroff-delay 135', cmd)
+
+    def test_dispatch_with_dry_run(self):
+        ops = Operations({'pve1': '10.0.0.1', 'pve2': '10.0.0.2'}, 'pve1')
+        with patch.object(sys, 'argv', ['styx/__main__.py']):
+            with patch.object(ops, 'run_on_host') as mock_run:
+                ops.dispatch_local_shutdown(
+                    'pve2', [('qemu', '101')],
+                    timeout_vm=120, dry_run=True,
+                )
+        cmd = mock_run.call_args[0][1]
+        self.assertIn('--dry-run', cmd)
+
+
 if __name__ == '__main__':
     unittest.main()

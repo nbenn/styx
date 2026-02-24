@@ -73,7 +73,7 @@ def discover(config, *, _pvesh_fn=None, _pveceph_fn=None, _on_warning=None):
     log(f'Hosts: {" ".join(f"{h}({ip})" for h, ip in topo.host_ips.items())}')
 
     # VMs
-    topo.vm_host, topo.vm_name = parse_cluster_resources(
+    topo.vm_host, topo.vm_name, topo.vm_type = parse_cluster_resources(
         pvesh('/cluster/resources', '--type', 'vm')
     )
     log(f'Running VMs: {" ".join(topo.vm_host)}')
@@ -134,6 +134,7 @@ def _apply_hosts_filter(topo, hosts):
     topo.host_ips    = {h: ip for h, ip in topo.host_ips.items() if h in reachable}
     topo.vm_host     = {v: h  for v, h  in topo.vm_host.items()  if h in shutdown_hosts}
     topo.vm_name     = {v: n  for v, n  in topo.vm_name.items()  if v in topo.vm_host}
+    topo.vm_type     = {v: t  for v, t  in topo.vm_type.items()  if v in topo.vm_host}
     topo.k8s_workers = [v for v in topo.k8s_workers if v in topo.vm_host]
     topo.k8s_cp      = [v for v in topo.k8s_cp      if v in topo.vm_host]
     if not topo.k8s_workers and not topo.k8s_cp:
@@ -304,12 +305,13 @@ def _dispatch_independent_phase(topo, config, ops, policy, do_poweroff,
     """
     log('--- Dispatching local-shutdown ---')
 
-    # Group VMIDs by host
+    # Group workloads by host as (type, vmid) tuples
     by_host = {}
     for vmid, host in topo.vm_host.items():
         if vm_filter is not None and vmid not in vm_filter:
             continue
-        by_host.setdefault(host, []).append(vmid)
+        wtype = topo.vm_type.get(vmid, 'qemu')
+        by_host.setdefault(host, []).append((wtype, vmid))
 
     # Calculate poweroff_delay for peers (autonomous fallback)
     poweroff_delay = None
@@ -317,16 +319,17 @@ def _dispatch_independent_phase(topo, config, ops, policy, do_poweroff,
         poweroff_delay = config.timeout_vm + _VM_ESCALATION_OVERHEAD
 
     # Dispatch to all hosts (peers get poweroff_delay, orchestrator does not)
-    for host, vmids in by_host.items():
+    for host, workloads in by_host.items():
         is_orch = (host == topo.orchestrator)
         delay = None if is_orch else poweroff_delay
-        log(f'Dispatching local-shutdown to {host}: {" ".join(vmids)}')
+        labels = ' '.join(f'{wt}:{vid}' for wt, vid in workloads)
+        log(f'Dispatching local-shutdown to {host}: {labels}')
         if policy.dry_run:
-            for vmid in vmids:
+            for _wtype, vmid in workloads:
                 ops.check_vm(host, vmid)
         else:
             ops.dispatch_local_shutdown(
-                host, vmids, config.timeout_vm,
+                host, workloads, config.timeout_vm,
                 poweroff_delay=delay, dry_run=policy.dry_run,
             )
 
@@ -420,14 +423,19 @@ def _log_revert_summary(topo, args, ceph_flags_set):
 
     vmids = sorted(topo.vm_host)
     if vmids:
+        qemu_ids = sorted(v for v in vmids if topo.vm_type.get(v, 'qemu') == 'qemu')
+        start_cmds = []
+        if qemu_ids:
+            start_cmds.append(f'qm start {" ".join(qemu_ids)}')
         if args.skip_poweroff:
             log(f'  VM(s) stopped (host NOT powered off): {" ".join(vmids)}')
-            log(f'    → qm start {" ".join(vmids)}')
+            for cmd in start_cmds:
+                log(f'    → {cmd}')
         else:
             peers = [h for h in topo.host_ips if h != topo.orchestrator]
             log(f'  Host(s) powered off: {" ".join(peers)}')
-            log(f'    → power on host(s), then qm start {" ".join(vmids)}  '
-                f'(if not HA-managed)')
+            for cmd in start_cmds:
+                log(f'    → power on host(s), then {cmd}  (if not HA-managed)')
 
 
 # ── main ─────────────────────────────────────────────────────────────────────
@@ -477,8 +485,13 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None):
     if args.mode in ('maintenance', 'dry-run'):
         preflight(topo, config)
         _log_runtime_budget(topo, config, args.phase)
+    type_counts = {}
+    for vt in topo.vm_type.values():
+        type_counts[vt] = type_counts.get(vt, 0) + 1
+    workload_summary = ', '.join(f'{n} {t}' for t, n in sorted(type_counts.items()))
     policy.phase_gate(
-        f'{len(topo.host_ips)} host(s), {len(topo.vm_host)} VM(s)'
+        f'{len(topo.host_ips)} host(s), {len(topo.vm_host)} workload(s)'
+        + (f' ({workload_summary})' if workload_summary else '')
         + (f', k8s workers={topo.k8s_workers} cp={topo.k8s_cp}' if topo.k8s_enabled else '')
         + ' — proceed with shutdown?'
     )

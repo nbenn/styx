@@ -94,6 +94,11 @@ class TestDiscoverVMs(unittest.TestCase):
         self.assertEqual(topo.vm_host['201'], 'pve1')
         self.assertEqual(topo.vm_name['211'], 'k8s-worker-1')
 
+    def test_vm_type_populated(self):
+        topo = discover(_cfg(), _pvesh_fn=_pvesh, _pveceph_fn=lambda: False)
+        for vmid in topo.vm_host:
+            self.assertEqual(topo.vm_type[vmid], 'qemu')
+
 
 # ── Kubernetes ────────────────────────────────────────────────────────────────
 

@@ -14,6 +14,7 @@ def _topo(**kwargs):
     t.host_ips    = {'pve1': '10.0.0.1', 'pve2': '10.0.0.2', 'pve3': '10.0.0.3'}
     t.orchestrator = 'pve1'
     t.vm_name     = {'201': 'k8s-cp-1', '211': 'k8s-worker-1'}
+    t.vm_type     = {'201': 'qemu', '211': 'qemu'}
     for k, v in kwargs.items():
         setattr(t, k, v)
     return t

@@ -170,7 +170,7 @@ All sections are optional. SSH must be set up between all Proxmox hosts (root, k
 All subcommands are available from the single file:
 - `styx.pyz orchestrate` — main shutdown sequence (orchestrator only)
 - `styx.pyz vm-shutdown <vmid> [timeout]` — single VM shutdown helper (all hosts)
-- `styx.pyz local-shutdown <vmid>... --timeout N [--poweroff-delay S]` — per-host VM shutdown with autonomous poweroff
+- `styx.pyz local-shutdown [TYPE:]VMID... --timeout N [--poweroff-delay S]` — per-host workload shutdown with autonomous poweroff
 
 Built with `bash scripts/build.sh`. Published as a GitHub release artifact on version tags via `.github/workflows/release.yml`.
 
@@ -215,11 +215,14 @@ Dispatched by the orchestrator after the coordinated phase. Each host shuts down
 
 **Usage:**
 ```bash
-styx.pyz local-shutdown <vmid>... --timeout 120 [--poweroff-delay 135] [--dry-run]
+styx.pyz local-shutdown [TYPE:]VMID... --timeout 120 [--poweroff-delay 135] [--dry-run]
 ```
 
+TYPE defaults to `qemu` if omitted. Examples: `qemu:101`, `lxc:200`, `301` (bare = qemu).
+
 **How it works:**
-1. Shut down all listed VMIDs in parallel using `ThreadPoolExecutor` (each calls `vm_shutdown.shutdown()`)
+1. Parse each argument as `(type, vmid)` and dispatch to the appropriate handler via `_SHUTDOWN`/`_CHECK` maps
+2. Shut down all workloads in parallel using `ThreadPoolExecutor`
 2. Collect results and log failures
 3. If `--poweroff-delay` is set: sleep until the deadline, then `poweroff`
 
@@ -595,7 +598,7 @@ load_config(path) -> StyxConfig       # INI file -> dataclass (all sections opti
 
 # styx/discover.py
 parse_cluster_status(data)            # pvesh cluster/status JSON -> (host_ips, orchestrator)
-parse_cluster_resources(data)         # pvesh cluster/resources JSON -> (vm_host, vm_name)
+parse_cluster_resources(data)         # pvesh cluster/resources JSON -> (vm_host, vm_name, vm_type)
 match_nodes_to_vms(vm_name, roles)    # k8s node names + VM names -> (workers, cp); raises on no match
 
 # styx/classify.py
@@ -618,7 +621,7 @@ ops.run_on_host(host, cmd)                     # SSH or local bash
 ops.get_running_vmids(host)                    # scan PID files on a host
 ops.check_vm(host, vmid)                       # vm-shutdown --dry-run (sync); used in dry-run mode
 ops.shutdown_vm(host, vmid, timeout)           # nohup styx vm-shutdown (fire-and-forget)
-ops.dispatch_local_shutdown(host, vmids, ...)  # nohup styx local-shutdown (one per host)
+ops.dispatch_local_shutdown(host, workloads, ...)  # nohup styx local-shutdown (one per host); workloads=[(type, vmid), ...]
 ops.cordon_node(node)                          # kubectl cordon via K8sClient
 ops.drain_node(node, timeout) -> bool          # kubectl drain via K8sClient
 ops.list_volume_attachments_for_node(node)     # CSI VolumeAttachment check post-drain
@@ -802,9 +805,29 @@ Reviewed [proxmox-guardian](https://github.com/Guilhem-Bonnet/proxmox-guardian) 
 - **Startup/recovery automation**: manual procedure with clear documentation is the right trade-off; automating recovery risks acting on incomplete state.
 - **Tag-based VM discovery**: considered and rejected (see above).
 
+## Investigation: Quorum-Free Termination Strategies
+
+### LXC Containers
+
+`lxc-stop -n <CTID> -t <timeout>` is quorum-free and handles the full
+graceful→force lifecycle. `lxc-ls --running` detects running containers
+without quorum. `pct shutdown`/`pct stop` require Proxmox quorum — unusable
+during shutdown when quorum may be lost.
+
+PID file paths (`/var/run/lxc/<CTID>/`) need verification on real Proxmox
+hardware to confirm the exact layout for PID-based status checks (analogous to
+`/var/run/qemu-server/<VMID>.pid` for QEMU).
+
+### OCI Containers (Proxmox 9)
+
+Proxmox 9 adds OCI container support. The runtime is `crun`/`runc`.
+Quorum-free termination path is unclear — needs investigation on Proxmox 9
+hardware to determine whether a local CLI or socket interface can stop
+containers without Proxmox API calls.
+
 ## Known Limitations
 
-- **VMs only**: LXC containers and Proxmox 9 OCI containers are not supported. The architecture allows adding a `styx-ct-shutdown` helper later.
+- **VMs only**: LXC containers and Proxmox 9 OCI containers are not supported. The architecture allows adding a `ct_shutdown.py` handler later — register it in the dispatch map and widen the discovery filter.
 - **Ceph on hosts only**: Ceph-in-VM topologies are not supported. Ceph OSD flags are set after VM shutdown commands are issued (before any host goes down), which is correct for on-host Ceph.
 - **No single-node support (v1)**: Styx assumes a multi-node Proxmox cluster. Single-node is a simpler problem and could be a stretch goal for v2.
 - **VM migration**: Do not run styx while a VM live migration is in progress. The VMID-to-host mapping is captured once at startup and not refreshed. A migrating VM may receive shutdown commands on the wrong host. The `pvesh` resource data includes a `status` field that could potentially detect migrations — this is a future enhancement if needed.

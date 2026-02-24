@@ -23,6 +23,7 @@ from test.integration.helpers import FakeOperations, start_fake_vm, kill_all_fak
 #   pve3 = VM 201 (k8s CP,      name "cp1")
 _VM_HOST = {'101': 'pve1', '211': 'pve2', '201': 'pve3'}
 _VM_NAME = {'101': 'infra-vm', '211': 'worker1', '201': 'cp1'}
+_VM_TYPE = {'101': 'qemu', '211': 'qemu', '201': 'qemu'}
 
 
 def _default_topo(run_dir=None, ceph=False):
@@ -31,6 +32,7 @@ def _default_topo(run_dir=None, ceph=False):
         orchestrator= 'pve1',
         vm_host     = dict(_VM_HOST),
         vm_name     = dict(_VM_NAME),
+        vm_type     = dict(_VM_TYPE),
         k8s_workers = ['211'],
         k8s_cp      = ['201'],
         k8s_enabled = True,
@@ -132,6 +134,7 @@ class TestPollingLoop(unittest.TestCase):
             orchestrator = 'pve1',
             vm_host      = {'211': 'pve2'},
             vm_name      = {'211': 'worker1'},
+            vm_type      = {'211': 'qemu'},
             k8s_workers  = ['211'],
         )
         # Kill the VM first so polling sees it as stopped immediately
@@ -341,7 +344,7 @@ class TestIdempotency(unittest.TestCase):
     def test_dispatch_to_stopped_vm_is_noop(self):
         """dispatch_local_shutdown on a VM with no PID file should not error."""
         ops = FakeOperations(self._tmp, _VM_HOST)
-        ops.dispatch_local_shutdown('pve1', ['999'], 5)
+        ops.dispatch_local_shutdown('pve1', [('qemu', '999')], 5)
         self.assertTrue(any('999' in s for s in ops.shutdown_log))
 
 

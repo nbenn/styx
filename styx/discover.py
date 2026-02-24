@@ -12,6 +12,7 @@ class ClusterTopology:
     orchestrator: str = ''
     vm_host:     dict = field(default_factory=dict)   # vmid -> hostname
     vm_name:     dict = field(default_factory=dict)   # vmid -> VM name
+    vm_type:     dict = field(default_factory=dict)   # vmid -> 'qemu' | 'lxc'
     k8s_workers: list = field(default_factory=list)   # VMIDs
     k8s_cp:      list = field(default_factory=list)   # VMIDs
     k8s_enabled: bool = False
@@ -33,12 +34,13 @@ def parse_cluster_status(data):
 
 
 def parse_cluster_resources(data):
-    """Parse /cluster/resources JSON list. Returns (vm_host, vm_name).
+    """Parse /cluster/resources JSON list. Returns (vm_host, vm_name, vm_type).
 
     Filters to running non-template QEMU VMs only.
     """
     vm_host = {}
     vm_name = {}
+    vm_type = {}
     for vm in data:
         if vm.get('type') != 'qemu':
             continue
@@ -49,7 +51,8 @@ def parse_cluster_resources(data):
         vmid = str(vm['vmid'])
         vm_host[vmid] = vm.get('node', '')
         vm_name[vmid] = vm.get('name', '')
-    return vm_host, vm_name
+        vm_type[vmid] = 'qemu'
+    return vm_host, vm_name, vm_type
 
 
 def match_nodes_to_vms(vm_name, node_roles):

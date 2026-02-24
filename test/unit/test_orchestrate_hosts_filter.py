@@ -13,6 +13,7 @@ def _topo():
     t.vm_host      = {'101': 'pve1', '201': 'pve2', '301': 'pve3', '302': 'pve3'}
     t.vm_name      = {'101': 'pve1-vm', '201': 'k8s-worker-1',
                       '301': 'k8s-cp-1', '302': 'pve3-vm'}
+    t.vm_type      = {'101': 'qemu', '201': 'qemu', '301': 'qemu', '302': 'qemu'}
     t.k8s_workers  = ['201']
     t.k8s_cp       = ['301']
     t.k8s_enabled  = True
@@ -93,6 +94,15 @@ class TestApplyHostsFilter(unittest.TestCase):
         self.assertFalse(t.k8s_enabled)
         self.assertEqual(t.k8s_workers, [])
         self.assertEqual(t.k8s_cp, [])
+
+    # ── vm_type ─────────────────────────────────────────────────────────────
+
+    def test_vm_type_filtered_to_targeted_hosts(self):
+        t = _apply_hosts_filter(_topo(), ['pve3'])
+        self.assertIn('301', t.vm_type)
+        self.assertIn('302', t.vm_type)
+        self.assertNotIn('201', t.vm_type)
+        self.assertNotIn('101', t.vm_type)
 
     # ── edge cases ────────────────────────────────────────────────────────────
 
