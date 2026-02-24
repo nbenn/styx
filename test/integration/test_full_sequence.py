@@ -58,14 +58,23 @@ class TestKubernetesTrack(unittest.TestCase):
     def _ops(self, topo=None):
         return FakeOperations(self._tmp, _VM_HOST)
 
-    def test_drains_workers_before_cp(self):
+    def test_cp_vms_shutdown_after_all_drains(self):
         ops    = self._ops()
         topo   = _default_topo()
         config = _default_config()
         run_k8s_track(topo, config, ops, Policy())
-        worker_idx = ops.drain_log.index('DRAIN worker1')
-        cp_idx     = ops.drain_log.index('DRAIN cp1')
-        self.assertLess(worker_idx, cp_idx)
+        # All nodes drained
+        self.assertIn('DRAIN worker1', ops.drain_log)
+        self.assertIn('DRAIN cp1', ops.drain_log)
+        # All VMs shut down
+        self.assertTrue(any('211' in s for s in ops.shutdown_log))
+        self.assertTrue(any('201' in s for s in ops.shutdown_log))
+        # CP VM shutdown happens after ALL drains complete
+        drain_seqs = [s for s, a in ops.sequence_log if a.startswith('DRAIN')]
+        cp_shutdown_seqs = [s for s, a in ops.sequence_log if 'SHUTDOWN 201' in a]
+        self.assertTrue(len(drain_seqs) > 0)
+        self.assertTrue(len(cp_shutdown_seqs) > 0)
+        self.assertGreater(min(cp_shutdown_seqs), max(drain_seqs))
 
     def test_drains_and_shuts_down_all_k8s_vms(self):
         ops = self._ops()
@@ -244,11 +253,14 @@ class TestMainPhaseControl(unittest.TestCase):
         self.assertEqual(ops.shutdown_log, [])
         self.assertEqual(ops.poweroff_log, [])
 
-    def test_workers_drained_before_cp(self):
+    def test_cp_shutdown_after_all_drains(self):
         ops = self._run(3)
-        worker_idx = ops.drain_log.index('DRAIN worker1')
-        cp_idx     = ops.drain_log.index('DRAIN cp1')
-        self.assertLess(worker_idx, cp_idx)
+        # CP VM shutdown happens after ALL drains complete
+        drain_seqs = [s for s, a in ops.sequence_log if a.startswith('DRAIN')]
+        cp_shutdown_seqs = [s for s, a in ops.sequence_log if 'SHUTDOWN 201' in a]
+        self.assertTrue(len(drain_seqs) > 0)
+        self.assertTrue(len(cp_shutdown_seqs) > 0)
+        self.assertGreater(min(cp_shutdown_seqs), max(drain_seqs))
 
 
 class TestIdempotency(unittest.TestCase):

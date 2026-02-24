@@ -230,6 +230,23 @@ def _drain_and_shutdown(vmid, node, host, config, ops, policy):
     ops.shutdown_vm(host, vmid, config.timeout_vm)
 
 
+def _drain_only(vmid, node, host, config, ops, policy):
+    log(f'Draining: {node} (VM {vmid} on {host})')
+    ok = policy.execute(f'drain {node}', ops.drain_node, node, config.timeout_drain)
+    if ok is None:        # dry-run
+        ops.check_vm(host, vmid)
+        return
+    if not ok:
+        policy.on_warning(f'drain timed out or failed for {node}')
+    else:
+        log(f'Drained: {node}')
+        stale = ops.list_volume_attachments_for_node(node)
+        if stale:
+            policy.on_warning(
+                f'stale VolumeAttachments after drain of {node}: {", ".join(stale)}'
+            )
+
+
 def _shutdown_only(vmid, host, config, ops, policy):
     log(f'Shutting down VM: {vmid} on {host}')
     if policy.dry_run:
@@ -246,25 +263,38 @@ def run_k8s_track(topo, config, ops, policy):
 
     log('--- Track A: Kubernetes ---')
 
-    def _run_parallel(vmids, label):
-        with concurrent.futures.ThreadPoolExecutor() as ex:
-            futs = {
-                ex.submit(
-                    _drain_and_shutdown,
-                    vmid, topo.vm_name.get(vmid, vmid), topo.vm_host[vmid],
-                    config, ops, policy,
-                ): vmid
-                for vmid in vmids
-            }
-            for fut in concurrent.futures.as_completed(futs):
-                try:
-                    fut.result()
-                except Exception as e:
-                    policy.on_warning(f'{label} {futs[fut]}: {e}')
+    cp_set = set(topo.k8s_cp)
 
-    _run_parallel(topo.k8s_workers, 'worker')
-    log('All worker nodes done')
-    _run_parallel(topo.k8s_cp, 'cp')
+    with concurrent.futures.ThreadPoolExecutor() as ex:
+        futs = {}
+        # Workers: drain + shutdown immediately
+        for vmid in topo.k8s_workers:
+            futs[ex.submit(
+                _drain_and_shutdown,
+                vmid, topo.vm_name.get(vmid, vmid), topo.vm_host[vmid],
+                config, ops, policy,
+            )] = vmid
+        # CP nodes: drain only (shutdown deferred until after barrier)
+        for vmid in topo.k8s_cp:
+            futs[ex.submit(
+                _drain_only,
+                vmid, topo.vm_name.get(vmid, vmid), topo.vm_host[vmid],
+                config, ops, policy,
+            )] = vmid
+
+        for fut in concurrent.futures.as_completed(futs):
+            try:
+                fut.result()
+            except Exception as e:
+                vmid = futs[fut]
+                label = 'cp' if vmid in cp_set else 'worker'
+                policy.on_warning(f'{label} {vmid}: {e}')
+
+    log('All drains complete')
+
+    # Barrier: shut down CP VMs only after all drains + worker shutdowns finish
+    for vmid in topo.k8s_cp:
+        _shutdown_only(vmid, topo.vm_host[vmid], config, ops, policy)
     log('All control-plane nodes done')
 
 

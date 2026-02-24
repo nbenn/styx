@@ -1,9 +1,11 @@
 """Integration test helpers: FakeOperations and fake VM lifecycle."""
 
+import itertools
 import os
 import signal
 import subprocess
 import tempfile
+import threading
 from pathlib import Path
 
 
@@ -55,6 +57,10 @@ class FakeOperations:
         self.ha_log       = []
         self.ceph_log     = []
         self.poweroff_log = []
+        self.sequence_log = []   # (seq, action) for ordering assertions
+
+        self._seq  = itertools.count()
+        self._lock = threading.Lock()
 
     def get_running_vmids(self, host):
         result = []
@@ -71,7 +77,10 @@ class FakeOperations:
         return result
 
     def shutdown_vm(self, host, vmid, timeout):
-        self.shutdown_log.append(f'SHUTDOWN {vmid} on {host}')
+        entry = f'SHUTDOWN {vmid} on {host}'
+        with self._lock:
+            self.shutdown_log.append(entry)
+            self.sequence_log.append((next(self._seq), entry))
         pid_file = self._run_dir / f'{vmid}.pid'
         if pid_file.exists():
             try:
@@ -84,8 +93,13 @@ class FakeOperations:
         self.cordon_log.append(f'CORDON {node}')
 
     def drain_node(self, node, timeout):
-        self.drain_log.append(f'DRAIN {node}')
+        with self._lock:
+            self.drain_log.append(f'DRAIN {node}')
+            self.sequence_log.append((next(self._seq), f'DRAIN {node}'))
         return True
+
+    def check_vm(self, host, vmid):
+        pass  # dry-run only: report live VM status
 
     def list_volume_attachments_for_node(self, node):
         return []
