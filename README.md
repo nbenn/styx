@@ -69,9 +69,9 @@ styx.pyz orchestrate [--mode <mode>] [--phase <1|2|3>] [--config <path>]
                      [--hosts HOST [HOST ...]] [--skip-poweroff]
 
 Modes:
-  emergency    Execute automatically, warn and continue on failures (default)
-  maintenance  Pre-flight checks + interactive gates between phases
-  dry-run      Log all planned actions without executing anything
+  emergency    Pre-flight warns, execute automatically, continue on failures (default)
+  maintenance  Pre-flight aborts on failure + interactive gates between phases
+  dry-run      Pre-flight aborts on failure, log all planned actions, execute nothing
 
 Options:
   --phase <1|2|3>        Execute up to and including this phase (default: 3)
@@ -107,13 +107,15 @@ styx.pyz orchestrate --mode maintenance --hosts pve3
 
 ### Modes
 
-**Emergency** (default) is designed for unattended UPS-triggered shutdowns: every step logs a warning on failure and moves on, with no human in the loop.
+All three modes run preflight checks — SSH reachability, styx version on peers, Kubernetes API + node readiness, Ceph health, Proxmox quorum, and a worst-case runtime budget. The difference is what happens when a check fails:
 
-**Maintenance** is for planned shutdowns. Before touching anything it runs a pre-flight check — SSH reachability to all hosts, Kubernetes API status with per-node drain estimates, Ceph health, and a worst-case runtime budget based on your configured timeouts — and displays the results. It then prompts for confirmation before proceeding. Any warning during execution (drain timeout, stale VolumeAttachment, etc.) pauses and asks whether to skip or abort. A second confirmation gate sits before the final host powerdown.
+**Emergency** (default) is designed for unattended UPS-triggered shutdowns: preflight failures are logged as warnings and execution continues. Every step during the shutdown sequence also logs a warning on failure and moves on, with no human in the loop.
 
-Both modes execute identical code paths, making maintenance mode a reliable way to exercise the emergency path against a real cluster.
+**Maintenance** is for planned shutdowns. Preflight failures are fatal — styx aborts before touching anything. If preflight passes, it then prompts for confirmation before proceeding. Any warning during execution (drain timeout, stale VolumeAttachment, etc.) pauses and asks whether to skip or abort. A second confirmation gate sits before the final host powerdown.
 
-**Dry-run** logs every planned action with a `[dry-run]` prefix and skips execution entirely. It also runs preflight checks and invokes `vm-shutdown --dry-run` on each peer to report real VM running status — making it as close to a real run as possible without modifying any state.
+All modes execute identical code paths, making maintenance mode a reliable way to exercise the emergency path against a real cluster.
+
+**Dry-run** logs every planned action with a `[dry-run]` prefix and skips execution entirely. Preflight failures are fatal, same as maintenance. It also invokes `vm-shutdown --dry-run` on each peer to report real VM running status — making it as close to a real run as possible without modifying any state.
 
 ### Testing on a live cluster
 

@@ -283,9 +283,9 @@ Three mutually exclusive modes, implemented as three `Policy` subclasses in `sty
 
 | Mode | Class | Behaviour |
 |------|-------|-----------|
-| `emergency` | `Policy` | Execute automatically; `on_warning()` logs and continues; `phase_gate()` is a no-op. Default — designed for unattended UPS-triggered shutdowns. |
-| `maintenance` | `MaintenancePolicy` | Pre-flight checks before any action; `on_warning()` prompts `[skip/abort]`; `phase_gate()` requires explicit confirmation before proceeding. Designed for planned maintenance. |
-| `dry-run` | `DryRunPolicy` | `execute()` logs `[dry-run] <description>` and returns `None` without calling the function. Preflight checks run; `vm-shutdown --dry-run` is invoked synchronously on each peer to report real VM status without touching anything. |
+| `emergency` | `Policy` | Execute automatically; `on_preflight_failure()` logs warning and continues; `on_warning()` logs and continues; `phase_gate()` is a no-op. Default — designed for unattended UPS-triggered shutdowns. |
+| `maintenance` | `MaintenancePolicy` | `on_preflight_failure()` aborts (`sys.exit`); `on_warning()` prompts `[skip/abort]`; `phase_gate()` requires explicit confirmation before proceeding. Designed for planned maintenance. |
+| `dry-run` | `DryRunPolicy` | `on_preflight_failure()` aborts (`sys.exit`); `execute()` logs `[dry-run] <description>` and returns `None` without calling the function; `vm-shutdown --dry-run` is invoked synchronously on each peer to report real VM status without touching anything. |
 
 **Preflight checks:**
 
@@ -662,7 +662,7 @@ ops.poweroff_self()                            # poweroff (orchestrator self)
 
 **Layer 3 — Orchestration** (`styx/orchestrate.py`):
 
-`main()` accepts `_discover_fn` and `_ops_factory` as keyword-only parameters for test injection.
+`main()` accepts `_discover_fn`, `_ops_factory`, and `_preflight_fn` as keyword-only parameters for test injection.
 
 Key helpers:
 - `_drain_all_k8s(topo, config, ops, policy)` — drain all k8s nodes in parallel (no VM shutdown)
@@ -726,20 +726,22 @@ def test_maintenance_on_warning_abort_exits_1(self):
 
 ### Integration Tests
 
-Full orchestration with `FakeOperations` — no real SSH, QMP, or kubectl. VMs simulated as `sleep` processes with PID files in a temp directory. `main()` receives injected `_discover_fn` and `_ops_factory`.
+Full orchestration with `FakeOperations` — no real SSH, QMP, or kubectl. VMs simulated as `sleep` processes with PID files in a temp directory. `main()` receives injected `_discover_fn`, `_ops_factory`, and `_preflight_fn` (no-op lambda to avoid real SSH/pvecm calls).
 
 ```python
 # test/integration/test_full_sequence.py
 def test_phase3_orchestrator_powers_off_last(self):
     main(['--phase', '3', '--config', '/dev/null'],
          _discover_fn=self._fake_discover,
-         _ops_factory=self._fake_ops)
+         _ops_factory=self._fake_ops,
+         _preflight_fn=lambda t, c, p: None)
     self.assertEqual(self.ops.poweroff_log[-1], 'POWEROFF_SELF')
 
 def test_dry_run_no_side_effects(self):
     main(['--mode', 'dry-run', '--phase', '3', '--config', '/dev/null'],
          _discover_fn=self._fake_discover,
-         _ops_factory=self._fake_ops)
+         _ops_factory=self._fake_ops,
+         _preflight_fn=lambda t, c, p: None)
     self.assertEqual(self.ops.shutdown_log, [])
     self.assertEqual(self.ops.poweroff_log, [])
 ```
