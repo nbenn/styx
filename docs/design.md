@@ -234,7 +234,7 @@ TYPE defaults to `qemu` if omitted. Examples: `qemu:101`, `lxc:200`, `301` (bare
 
 **The orchestrator** receives no `--poweroff-delay` — it powers off after the polling loop confirms all VMs are stopped.
 
-The implementation lives in `styx/local_shutdown.py`. Logs to `/tmp/styx-local-shutdown.log` (collected by `poweroff_host()` before the host is powered off).
+The implementation lives in `styx/local_shutdown.py`. Logs to `/var/log/styx-local-shutdown.log` (collected by `poweroff_host()` before the host is powered off, and survives reboot for post-mortem if collection fails).
 
 **Design note — why host poweroff is centrally coordinated, not autonomous:**
 

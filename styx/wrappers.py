@@ -16,9 +16,9 @@ _HA_TRANSITION_TIMEOUT = 30
 
 
 _INSTALLED_PYZ       = '/opt/styx/styx.pyz'
-_VM_LOG              = '/tmp/styx-vm-{vmid}.log'
-_VM_LOG_GLOB         = '/tmp/styx-vm-*.log'
-_LOCAL_SHUTDOWN_LOG   = '/tmp/styx-local-shutdown.log'
+_VM_LOG              = '/var/log/styx-vm-{vmid}.log'
+_VM_LOG_GLOB         = '/var/log/styx-vm-*.log'
+_LOCAL_SHUTDOWN_LOG   = '/var/log/styx-local-shutdown.log'
 
 
 def _local_pyz():
