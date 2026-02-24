@@ -15,7 +15,6 @@ from styx.policy import log
 _HA_TRANSITION_TIMEOUT = 30
 
 
-_INSTALLED_PYZ       = '/opt/styx/styx.pyz'
 _VM_LOG              = '/var/log/styx-vm-{vmid}.log'
 _VM_LOG_GLOB         = '/var/log/styx-vm-*.log'
 _LOCAL_SHUTDOWN_LOG   = '/var/log/styx-local-shutdown.log'
@@ -25,11 +24,6 @@ def _local_pyz():
     """Return sys.argv[0] if running as a zipapp, else None."""
     argv0 = sys.argv[0] if sys.argv else ''
     return argv0 if argv0.endswith('.pyz') else None
-
-
-def installed_pyz_path():
-    """Return the path where styx.pyz is installed on peer hosts."""
-    return _INSTALLED_PYZ
 
 
 def _styx_cmd():
@@ -96,8 +90,6 @@ class Operations:
 
     def _vm_prefix(self, host):
         """Command prefix for running styx on host."""
-        if _local_pyz() and host != self._orchestrator:
-            return f'python3 {_INSTALLED_PYZ}'
         return _styx_cmd()
 
     def check_vm(self, host, vmid):

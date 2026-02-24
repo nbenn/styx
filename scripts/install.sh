@@ -2,10 +2,11 @@
 #
 # install.sh — Install styx.pyz on all Proxmox cluster nodes.
 #
-# Usage: install.sh [--hosts HOST ...] [--pyz PATH] [--update-self]
-#   --pyz PATH      Use a local .pyz file instead of downloading from GitHub
-#   --hosts HOST    Explicit host list (repeatable); default: auto-discover via pvesh
-#   --update-self   Replace this script with the latest release from GitHub, then exit
+# Usage: install.sh [--hosts HOST ...] [--pyz PATH] [--install-dir DIR] [--update-self]
+#   --pyz PATH        Use a local .pyz file instead of downloading from GitHub
+#   --hosts HOST      Explicit host list (repeatable); default: auto-discover via pvesh
+#   --install-dir DIR Install to DIR/styx.pyz (default: /opt/styx)
+#   --update-self     Replace this script with the latest release from GitHub, then exit
 #
 # Downloads the latest styx.pyz from GitHub releases (unless --pyz is given),
 # then copies it to /opt/styx/styx.pyz on every node. Re-runnable for upgrades.
@@ -19,11 +20,14 @@ RELEASE_BASE="https://github.com/nbenn/styx/releases/latest/download"
 pyz=""
 hosts=()
 update_self=false
+install_dir=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --pyz)
             pyz="$2"; shift 2 ;;
+        --install-dir)
+            install_dir="$2"; shift 2 ;;
         --hosts)
             shift
             while [[ $# -gt 0 && ! "$1" =~ ^-- ]]; do
@@ -40,6 +44,11 @@ while [[ $# -gt 0 ]]; do
             echo "Unknown option: $1" >&2; exit 1 ;;
     esac
 done
+
+if [[ -n "$install_dir" ]]; then
+    INSTALL_DIR="$install_dir"
+    INSTALL_PATH="${INSTALL_DIR}/styx.pyz"
+fi
 
 # ── Self-update ──────────────────────────────────────────────────────────────
 

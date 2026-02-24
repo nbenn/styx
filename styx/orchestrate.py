@@ -20,7 +20,7 @@ from styx.discover import (
 from styx.config import DEFAULT_CEPH_FLAGS_PARTIAL
 from styx import __version__
 from styx.policy import Policy, DryRunPolicy, MaintenancePolicy, log, setup_log_file
-from styx.wrappers import Operations, _local_pyz, installed_pyz_path
+from styx.wrappers import Operations, _local_pyz
 
 
 # ── external CLI helpers ──────────────────────────────────────────────────────
@@ -177,7 +177,7 @@ def preflight(topo, config):
             len(topo.host_ips) - 1 - len(reachable)   # -1 for orchestrator
         )
         for host, ip in reachable:
-            cmd = f'python3 {installed_pyz_path()} --version'
+            cmd = f'python3 {_local_pyz()} --version'
             try:
                 r = subprocess.run(
                     ['ssh', '-o', 'ConnectTimeout=5', '-o', 'BatchMode=yes',
