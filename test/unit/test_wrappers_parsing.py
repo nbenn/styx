@@ -173,6 +173,71 @@ class TestParseOsdTree(unittest.TestCase):
     def test_missing_nodes_key(self):
         self.assertEqual(_parse_osd_tree({}), {})
 
+    def test_stray_entries_ignored(self):
+        data = {'nodes': [
+            {'id': -1, 'type': 'root', 'name': 'default', 'children': [-2]},
+            {'id': -2, 'type': 'host', 'name': 'pve1', 'children': [0]},
+            {'id': 0, 'type': 'osd', 'name': 'osd.0'},
+        ], 'stray': []}
+        self.assertEqual(_parse_osd_tree(data), {'pve1': ['0']})
+
+    def test_realistic_ceph_output(self):
+        """Real ceph osd tree --format json structure (anonymized)."""
+        data = {"nodes": [
+            {"id": -1, "name": "default", "type": "root", "type_id": 11,
+             "children": [-11, -9, -7, -5, -3]},
+            {"id": -3, "name": "pve1", "type": "host", "type_id": 1,
+             "pool_weights": {}, "children": [1, 0]},
+            {"id": 0, "device_class": "ssd", "name": "osd.0", "type": "osd",
+             "type_id": 0, "crush_weight": 1.4554901123046875, "depth": 2,
+             "pool_weights": {}, "exists": 1, "status": "up", "reweight": 1,
+             "primary_affinity": 1},
+            {"id": 1, "device_class": "ssd", "name": "osd.1", "type": "osd",
+             "type_id": 0, "crush_weight": 1.4554901123046875, "depth": 2,
+             "pool_weights": {}, "exists": 1, "status": "up", "reweight": 1,
+             "primary_affinity": 1},
+            {"id": -5, "name": "pve2", "type": "host", "type_id": 1,
+             "pool_weights": {}, "children": [2]},
+            {"id": 2, "device_class": "ssd", "name": "osd.2", "type": "osd",
+             "type_id": 0, "crush_weight": 2.9109954833984375, "depth": 2,
+             "pool_weights": {}, "exists": 1, "status": "up", "reweight": 1,
+             "primary_affinity": 1},
+            {"id": -7, "name": "pve3", "type": "host", "type_id": 1,
+             "pool_weights": {}, "children": [4, 3]},
+            {"id": 3, "device_class": "ssd", "name": "osd.3", "type": "osd",
+             "type_id": 0, "crush_weight": 1.4554901123046875, "depth": 2,
+             "pool_weights": {}, "exists": 1, "status": "up", "reweight": 1,
+             "primary_affinity": 1},
+            {"id": 4, "device_class": "ssd", "name": "osd.4", "type": "osd",
+             "type_id": 0, "crush_weight": 1.4554901123046875, "depth": 2,
+             "pool_weights": {}, "exists": 1, "status": "up", "reweight": 1,
+             "primary_affinity": 1},
+            {"id": -9, "name": "pve4", "type": "host", "type_id": 1,
+             "pool_weights": {}, "children": [7, 6]},
+            {"id": 6, "device_class": "ssd", "name": "osd.6", "type": "osd",
+             "type_id": 0, "crush_weight": 1.4554901123046875, "depth": 2,
+             "pool_weights": {}, "exists": 1, "status": "up", "reweight": 1,
+             "primary_affinity": 1},
+            {"id": 7, "device_class": "ssd", "name": "osd.7", "type": "osd",
+             "type_id": 0, "crush_weight": 1.4554901123046875, "depth": 2,
+             "pool_weights": {}, "exists": 1, "status": "up", "reweight": 1,
+             "primary_affinity": 1},
+            {"id": -11, "name": "pve5", "type": "host", "type_id": 1,
+             "pool_weights": {}, "children": [5]},
+            {"id": 5, "device_class": "ssd", "name": "osd.5", "type": "osd",
+             "type_id": 0, "crush_weight": 2.9109954833984375, "depth": 2,
+             "pool_weights": {}, "exists": 1, "status": "up", "reweight": 1,
+             "primary_affinity": 1},
+        ], "stray": []}
+        result = _parse_osd_tree(data)
+        self.assertEqual(result, {
+            'pve1': ['1', '0'],
+            'pve2': ['2'],
+            'pve3': ['4', '3'],
+            'pve4': ['7', '6'],
+            'pve5': ['5'],
+        })
+
 
 # ── _styx_cmd ────────────────────────────────────────────────────────────────
 
