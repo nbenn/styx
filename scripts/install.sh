@@ -3,12 +3,13 @@
 # install.sh — Install styx.pyz on all Proxmox cluster nodes.
 #
 # Usage: install.sh [--hosts HOST ...] [--pyz PATH] [--install-dir DIR] [--update-self]
-#                   [--sync-config]
+#                   [--sync-config] [--include-gate]
 #   --pyz PATH        Use a local .pyz file instead of downloading from GitHub
 #   --hosts HOST      Explicit host list (repeatable); default: auto-discover via pvesh
 #   --install-dir DIR Install to DIR/styx.pyz (default: /opt/styx)
 #   --update-self     Replace this script with the latest release from GitHub, then exit
 #   --sync-config     Sync all config files in INSTALL_DIR (except styx.pyz) to peers
+#   --include-gate            Also install gate.sh alongside styx.pyz
 #
 # Downloads the latest styx.pyz from GitHub releases (unless --pyz is given),
 # then copies it to /opt/styx/styx.pyz on every node. Re-runnable for upgrades.
@@ -25,6 +26,7 @@ hosts=()
 update_self=false
 install_dir=""
 sync_config=false
+include_gate=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -42,8 +44,10 @@ while [[ $# -gt 0 ]]; do
             update_self=true; shift ;;
         --sync-config)
             sync_config=true; shift ;;
+        --include-gate)
+            include_gate=true; shift ;;
         -h|--help)
-            sed -n '3,11s/^# //p' "$0"
+            sed -n '3,12s/^# //p' "$0"
             exit 0
             ;;
         *)
@@ -59,8 +63,8 @@ fi
 # ── Self-update ──────────────────────────────────────────────────────────────
 
 if $update_self; then
-    if $sync_config || [[ -n "$pyz" ]] || [[ ${#hosts[@]} -gt 0 ]] || [[ -n "$install_dir" ]]; then
-        echo "WARNING: --update-self exits after updating; other flags (--sync-config, --pyz, --hosts, --install-dir) are ignored. Re-run without --update-self to apply them."
+    if $sync_config || $include_gate || [[ -n "$pyz" ]] || [[ ${#hosts[@]} -gt 0 ]] || [[ -n "$install_dir" ]]; then
+        echo "WARNING: --update-self exits after updating; other flags are ignored. Re-run without --update-self to apply them."
     fi
     self="$(readlink -f "$0")"
     echo "Downloading latest install.sh from GitHub releases..."
@@ -84,6 +88,24 @@ if [[ -z "$pyz" ]]; then
 fi
 
 trap '[ -n "$cleanup_tmp" ] && rm -f "$cleanup_tmp"' EXIT
+
+# ── Generate gate.sh ─────────────────────────────────────────────────────────
+
+write_gate() {
+    cat <<'GATE'
+#!/bin/bash
+set -euo pipefail
+DIR="$(cd "$(dirname "$0")" && pwd)"
+read -ra args <<< "${SSH_ORIGINAL_COMMAND:-}"
+
+case "${args[0]:-}" in
+    orchestrate|-v|--version) ;;
+    *) echo "ERROR: only 'orchestrate' and '-v/--version' allowed" >&2; exit 1 ;;
+esac
+
+exec python3 "$DIR/styx.pyz" "${args[@]}"
+GATE
+}
 
 # ── Report version ────────────────────────────────────────────────────────────
 
@@ -167,6 +189,19 @@ for name in "${!host_ips[@]}"; do
             < "$pyz"
     fi
 
+    # Install gate.sh
+    if $include_gate; then
+        gate_dst="${INSTALL_DIR}/gate.sh"
+        if [[ "$name" == "$local_hostname" ]]; then
+            write_gate > "$gate_dst"
+            chmod +x "$gate_dst"
+        else
+            write_gate | ssh -o ConnectTimeout=5 -o BatchMode=yes "root@${ip}" \
+                "cat > ${gate_dst} && chmod +x ${gate_dst}"
+        fi
+        echo "  gate.sh installed"
+    fi
+
     # Verify
     if [[ "$name" == "$local_hostname" ]]; then
         if python3 "$INSTALL_PATH" vm-shutdown --help >/dev/null 2>&1; then
@@ -195,7 +230,7 @@ fi
 
 if $sync_config; then
     mapfile -t config_files < <(
-        find "$INSTALL_DIR" -maxdepth 1 -type f ! -name 'styx.pyz' -printf '%f\n'
+        find "$INSTALL_DIR" -maxdepth 1 -type f ! -name 'styx.pyz' ! -name 'gate.sh' ! -name 'install.sh' -printf '%f\n'
     )
 
     if [[ ${#config_files[@]} -eq 0 ]]; then
