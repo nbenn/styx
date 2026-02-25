@@ -109,7 +109,7 @@ def check(vmid):
     if pid is None or not _alive(pid):
         print(f'VM {vmid} is not running')
     else:
-        print(f'VM {vmid} is running (pid {pid}) — would shut down')
+        print(f'[dry-run] VM {vmid} is running (pid {pid})')
     return 0
 
 

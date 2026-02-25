@@ -189,8 +189,7 @@ def _apply_hosts_filter(topo, hosts, quiet=False):
     if not topo.k8s_workers and not topo.k8s_cp:
         topo.k8s_enabled = False
     if not quiet:
-        log(f'--hosts filter: shutting down {" ".join(sorted(shutdown_hosts))} '
-            f'({len(topo.vm_host)} VM(s))')
+        log(f'Target: {" ".join(sorted(shutdown_hosts))} ({len(topo.vm_host)} VMs)')
     return topo
 
 
@@ -383,7 +382,6 @@ def _drain_only(vmid, node, host, config, ops, policy):
     log(f'Draining: {node} (VM {vmid} on {host})')
     ok = policy.execute(f'drain {node}', ops.drain_node, node, config.timeout_drain)
     if ok is None:        # dry-run
-        ops.check_vm(host, vmid)
         return
     if not ok:
         policy.on_warning(f'drain timed out or failed for {node}')
@@ -485,7 +483,7 @@ def run_polling_loop(topo, ops, policy, do_poweroff, poll_interval=None,
     if policy.dry_run:
         for host in topo.host_ips:
             if host != topo.orchestrator:
-                log(f'[dry-run] would poweroff_host {host}')
+                log(f'[dry-run] poweroff_host {host}')
         return
 
     deadline = (time.monotonic() + timeout) if timeout is not None else None

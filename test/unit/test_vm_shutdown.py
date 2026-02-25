@@ -258,7 +258,7 @@ class TestCheck(_Base):
         self.assertEqual(rc, 0)
         self.assertIn('running', out)
         self.assertIn(str(proc.pid), out)
-        self.assertIn('would shut down', out)
+        self.assertIn('[dry-run]', out)
 
     def test_dead_process_reports_not_running(self):
         proc = subprocess.Popen(['true'], stdout=subprocess.DEVNULL)
