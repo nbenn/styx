@@ -656,6 +656,13 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None, _preflight_fn=None)
 
     # ── COORDINATED PHASE ─────────────────────────────────────────────────
 
+    # HA — disable before cordon to close the window where HA could
+    # migrate a VM onto the target host between preflight and disable.
+    if should_disable_ha(args.phase):
+        _disable_ha(topo, ops, policy, 'all')
+    elif topo.k8s_enabled:
+        _disable_ha(topo, ops, policy, 'k8s')
+
     # Cordon all k8s nodes (idempotent)
     if topo.k8s_enabled:
         log('--- Cordoning all k8s nodes ---')
@@ -666,12 +673,6 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None, _preflight_fn=None)
                 policy.execute(f'cordon {node}', ops.cordon_node, node)
             except Exception as e:
                 policy.on_warning(f'cordon failed for {node}: {e}')
-
-    # HA
-    if should_disable_ha(args.phase):
-        _disable_ha(topo, ops, policy, 'all')
-    elif topo.k8s_enabled:
-        _disable_ha(topo, ops, policy, 'k8s')
 
     # Drain all k8s nodes (workers + CP) in parallel — no VM shutdown
     _drain_all_k8s(topo, config, ops, policy)
