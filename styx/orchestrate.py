@@ -437,8 +437,6 @@ def _dispatch_independent_phase(topo, config, ops, policy, do_poweroff,
 
     vm_filter: if set, only include these VMIDs (e.g. k8s-only for phase 1).
     """
-    log('--- Dispatching local-shutdown ---')
-
     # Group workloads by host as (type, vmid) tuples
     by_host = {}
     for vmid, host in topo.vm_host.items():
@@ -446,6 +444,10 @@ def _dispatch_independent_phase(topo, config, ops, policy, do_poweroff,
             continue
         wtype = topo.vm_type.get(vmid, 'qemu')
         by_host.setdefault(host, []).append((wtype, vmid))
+
+    vm_lines = [f'  {h}: {" ".join(vid for _, vid in wl)}'
+                for h, wl in sorted(by_host.items())]
+    log('--- Shutting down VMs ---\n' + '\n'.join(vm_lines))
 
     # Calculate poweroff_delay for peers (autonomous fallback)
     poweroff_delay = None
@@ -456,8 +458,6 @@ def _dispatch_independent_phase(topo, config, ops, policy, do_poweroff,
     for host, workloads in by_host.items():
         is_orch = (host == topo.orchestrator)
         delay = None if is_orch else poweroff_delay
-        labels = ' '.join(f'{wt}:{vid}' for wt, vid in workloads)
-        log(f'Dispatching local-shutdown to {host}: {labels}')
         if policy.dry_run:
             for _wtype, vmid in workloads:
                 ops.check_vm(host, vmid)
