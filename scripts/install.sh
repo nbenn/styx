@@ -59,6 +59,9 @@ fi
 # ── Self-update ──────────────────────────────────────────────────────────────
 
 if $update_self; then
+    if $sync_config || [[ -n "$pyz" ]] || [[ ${#hosts[@]} -gt 0 ]] || [[ -n "$install_dir" ]]; then
+        echo "WARNING: --update-self exits after updating; other flags (--sync-config, --pyz, --hosts, --install-dir) are ignored. Re-run without --update-self to apply them."
+    fi
     self="$(readlink -f "$0")"
     echo "Downloading latest install.sh from GitHub releases..."
     curl -fSL "${RELEASE_BASE}/install.sh" -o "${self}.tmp"
