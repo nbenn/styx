@@ -174,12 +174,66 @@ vm = 90
 
 See [`styx.conf.example`](styx.conf.example) for the full reference.
 
-## Triggering
+## Remote Triggering
 
-Styx is a command, not a daemon. Wire it to your trigger of choice:
+Styx ships two scripts for remote triggering (e.g. from a UPS monitoring host):
 
-- **NUT** (Network UPS Tools): add `SHUTDOWNCMD "/opt/styx/styx.pyz orchestrate"` to `upsmon.conf`
-- **Manual**: run `styx.pyz orchestrate` directly on the orchestrator
+### Setup
+
+**1. Generate a dedicated SSH key** on the trigger host (the machine monitoring the UPS):
+
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/styx-trigger -N "" -C "styx-trigger"
+```
+
+**2. Install `gate.sh`** on every Proxmox node and add the public key to `authorized_keys`:
+
+```bash
+# On each node:
+cp scripts/gate.sh /opt/styx/gate.sh
+chmod +x /opt/styx/gate.sh
+
+# In /root/.ssh/authorized_keys:
+command="/opt/styx/gate.sh",restrict ssh-ed25519 AAAA... styx-trigger
+```
+
+The `restrict` keyword disables all SSH features (pty, forwarding, tunnels) by default. The `command=` directive ensures the key can only invoke styx — regardless of what the SSH client requests, `gate.sh` passes arguments to `styx.pyz` and pins `--config` to `/etc/styx/styx.conf`.
+
+**3. Install `trigger.sh`** on the UPS monitoring host and configure your UPS software to call it:
+
+```bash
+cp scripts/trigger.sh /usr/local/bin/styx-trigger
+chmod +x /usr/local/bin/styx-trigger
+```
+
+### Usage
+
+```bash
+# Trigger emergency shutdown, trying each node until one responds
+styx-trigger 192.168.1.10 192.168.1.11 192.168.1.12
+
+# Dry-run (verify connectivity and plan without executing)
+styx-trigger --mode dry-run 192.168.1.10 192.168.1.11 192.168.1.12
+
+# Custom SSH key path
+styx-trigger --key /path/to/key --mode emergency 192.168.1.10 192.168.1.11
+```
+
+The trigger script tries each node in order and stops at the first one that responds. Any node can act as orchestrator, so if the primary is down, the next reachable node takes over. If a connection drops mid-run and the script falls through to another node, both runs can proceed safely — all styx operations are idempotent.
+
+### NUT integration
+
+In `upsmon.conf` on the UPS monitoring host:
+
+```
+SHUTDOWNCMD "/usr/local/bin/styx-trigger 192.168.1.10 192.168.1.11 192.168.1.12"
+```
+
+### Other triggers
+
+Styx can also be triggered directly on any cluster node:
+
+- **Manual**: `styx.pyz orchestrate` on any node
 - **Cron/systemd**: call from a shutdown script
 
 ## Logging

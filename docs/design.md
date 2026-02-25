@@ -140,13 +140,13 @@ All sections are optional. SSH must be set up between all Proxmox hosts (root, k
 ## Architecture
 
 ```
-┌──────────────┐         ┌──────────────────────────┐
-│ UPS / NUT /  │ trigger │ styx                     │
-│ manual       │────────→│ on orchestrator host      │
-└──────────────┘         └──────────┬───────────────┘
-                                    │
-                          Interleaved pipeline
-                          (see Shutdown Sequence)
+┌──────────────┐  trigger.sh   ┌──────────────────────────┐
+│ UPS / NUT /  │──────────────→│ gate.sh → styx.pyz       │
+│ monitoring   │  SSH (tries   │ on first reachable node   │
+└──────────────┘  each node)   └──────────┬───────────────┘
+                                          │
+                                Interleaved pipeline
+                                (see Shutdown Sequence)
 ```
 
 ### Prerequisites
@@ -163,6 +163,14 @@ All sections are optional. SSH must be set up between all Proxmox hosts (root, k
 ```
 /opt/styx/styx.pyz                 # Self-contained executable (installed on every node)
 /opt/styx/styx.conf                # Configuration (optional, next to zipapp; or /etc/styx/styx.conf)
+/opt/styx/gate.sh                  # SSH forced-command wrapper (installed on every node)
+```
+
+On the UPS monitoring host:
+
+```
+/usr/local/bin/styx-trigger        # Remote trigger script (scripts/trigger.sh)
+~/.ssh/styx-trigger                # Dedicated SSH key for triggering
 ```
 
 `styx.pyz` is a Python zipapp (stdlib `zipapp` module, Python 3.6+). It bundles the entire `styx/` package in a single executable file. The install script (`scripts/install.sh`) copies it to `/opt/styx/styx.pyz` on every cluster node via SSH.
@@ -830,7 +838,7 @@ Considered adding a third discovery mechanism: tag Proxmox VMs with `styx.k8s-wo
 
 Reviewed [proxmox-guardian](https://github.com/Guilhem-Bonnet/proxmox-guardian) as prior art. Outcomes:
 - **Per-action error policy**: covered by the `Policy` class pattern — `emergency` warns and continues, `maintenance` prompts. No additional per-operation configuration matrix needed.
-- **Persistent state**: unnecessary as long as all actions remain idempotent (they do).
+- **Persistent state**: unnecessary as long as all actions remain idempotent (they do). **This is a critical design invariant**: cordon, drain, HA disable, Ceph flag setting, VM shutdown, and host poweroff are all safe to run multiple times. This property enables the trigger script (`scripts/trigger.sh`) to try multiple nodes without risk — if a connection drops mid-run and a second node picks up the trigger, both runs can proceed safely. New operations added to styx must preserve this invariant.
 - **Startup/recovery automation**: manual procedure with clear documentation is the right trade-off; automating recovery risks acting on incomplete state.
 - **Tag-based VM discovery**: considered and rejected (see above).
 
