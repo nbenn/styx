@@ -29,7 +29,8 @@ def setup_log_file(path):
 
 
 def log(msg):
-    line = f'[{_now()}] {msg}'
+    ts = f'[{_now()}]'
+    line = '\n'.join(f'{ts} {l}' for l in msg.split('\n'))
     print(line, flush=True)
     if _log_fh is not None:
         print(line, file=_log_fh)
