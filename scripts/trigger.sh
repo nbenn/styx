@@ -68,9 +68,11 @@ for node in "${CONTROLLERS[@]}"; do
     echo "Trying ${node}..."
     if ssh -o ConnectTimeout="$TIMEOUT" \
            -o BatchMode=yes \
+           -o StrictHostKeyChecking=no \
+           -o IdentitiesOnly=yes \
            -i "$KEY" \
            "root@${node}" \
-           "$styx_cmd" 2>&1; then
+           -- "$styx_cmd" 2>&1; then
         echo "Done via ${node}."
         exit 0
     else

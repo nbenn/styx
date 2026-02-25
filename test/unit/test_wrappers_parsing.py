@@ -15,78 +15,98 @@ from styx.wrappers import (
 
 class TestParseHaStatus(unittest.TestCase):
 
-    def test_empty_output_returns_empty(self):
-        self.assertEqual(_parse_ha_status(''), [])
+    def test_empty_list_returns_empty(self):
+        self.assertEqual(_parse_ha_status([]), [])
 
     def test_started_sid_returned(self):
-        output = 'vm:101 started node pve1\n'
-        self.assertEqual(_parse_ha_status(output), ['vm:101'])
+        data = [{'sid': 'vm:101', 'state': 'started'}]
+        self.assertEqual(_parse_ha_status(data), ['vm:101'])
 
     def test_multiple_started_sids_all_returned(self):
-        output = (
-            'vm:101 started node pve1\n'
-            'vm:102 started node pve2\n'
-            'vm:103 started node pve3\n'
-        )
-        self.assertEqual(_parse_ha_status(output), ['vm:101', 'vm:102', 'vm:103'])
+        data = [
+            {'sid': 'vm:101', 'state': 'started'},
+            {'sid': 'vm:102', 'state': 'started'},
+            {'sid': 'vm:103', 'state': 'started'},
+        ]
+        self.assertEqual(_parse_ha_status(data), ['vm:101', 'vm:102', 'vm:103'])
 
     def test_non_started_states_excluded(self):
-        output = (
-            'vm:101 stopped\n'
-            'vm:102 error\n'
-            'vm:103 fence\n'
-            'vm:104 disabled\n'
-            'vm:105 ignored\n'
-        )
-        self.assertEqual(_parse_ha_status(output), [])
+        data = [
+            {'sid': 'vm:101', 'state': 'stopped'},
+            {'sid': 'vm:102', 'state': 'error'},
+            {'sid': 'vm:103', 'state': 'fence'},
+            {'sid': 'vm:104', 'state': 'disabled'},
+            {'sid': 'vm:105', 'state': 'ignored'},
+        ]
+        self.assertEqual(_parse_ha_status(data), [])
 
     def test_mixed_states_only_started_returned(self):
-        output = (
-            'vm:101 started node pve1\n'
-            'vm:102 stopped\n'
-            'vm:103 started node pve2\n'
-            'vm:104 disabled\n'
-        )
-        self.assertEqual(_parse_ha_status(output), ['vm:101', 'vm:103'])
+        data = [
+            {'sid': 'vm:101', 'state': 'started'},
+            {'sid': 'vm:102', 'state': 'stopped'},
+            {'sid': 'vm:103', 'state': 'started'},
+            {'sid': 'vm:104', 'state': 'disabled'},
+        ]
+        self.assertEqual(_parse_ha_status(data), ['vm:101', 'vm:103'])
 
-    def test_header_lines_ignored(self):
-        # 'quorum OK' → parts[1] is 'OK', not 'started'
-        # 'resources:' → single token, len(parts) < 2
-        output = (
-            'quorum OK\n'
-            'resources:\n'
-            'vm:101 started node pve1\n'
-        )
-        self.assertEqual(_parse_ha_status(output), ['vm:101'])
+    def test_entries_without_sid_skipped(self):
+        data = [
+            {'state': 'started'},
+            {'sid': 'vm:101', 'state': 'started'},
+        ]
+        self.assertEqual(_parse_ha_status(data), ['vm:101'])
 
-    def test_blank_lines_ignored(self):
-        output = '\n\nvm:101 started\n\n'
-        self.assertEqual(_parse_ha_status(output), ['vm:101'])
+    def test_entries_without_state_skipped(self):
+        data = [
+            {'sid': 'vm:101'},
+            {'sid': 'vm:102', 'state': 'started'},
+        ]
+        self.assertEqual(_parse_ha_status(data), ['vm:102'])
 
-    def test_single_token_lines_ignored(self):
-        output = 'vm:101\nvm:102 started\n'
-        self.assertEqual(_parse_ha_status(output), ['vm:102'])
+    def test_non_service_entries_skipped(self):
+        data = [
+            {'id': 'master', 'type': 'crm', 'node': 'pve1', 'status': 'active'},
+            {'id': 'lrm', 'type': 'lrm', 'node': 'pve2', 'status': 'active'},
+            {'sid': 'vm:101', 'state': 'started'},
+        ]
+        self.assertEqual(_parse_ha_status(data), ['vm:101'])
 
-    def test_sid_is_first_field_not_full_line(self):
-        output = 'vm:201 started node pve1 extra info\n'
-        result = _parse_ha_status(output)
-        self.assertEqual(result, ['vm:201'])
-        self.assertNotIn(' ', result[0])
-
-    def test_realistic_ha_manager_output(self):
-        output = (
-            'quorum OK\n'
-            '\n'
-            'resources:\n'
-            '\n'
-            'vm:101 started         node pve1\n'
-            'vm:102 stopped\n'
-            'vm:201 started         node pve2\n'
-            'vm:211 started         node pve3\n'
-            'vm:212 disabled\n'
-        )
-        result = _parse_ha_status(output)
-        self.assertEqual(result, ['vm:101', 'vm:201', 'vm:211'])
+    def test_realistic_api_output(self):
+        """Real pvesh get /cluster/ha/status/current structure (anonymized)."""
+        data = [
+            {'id': 'quorum', 'node': 'pve1', 'quorate': 1,
+             'status': 'OK', 'type': 'quorum'},
+            {'id': 'master', 'node': 'pve2', 'timestamp': 1772048533,
+             'status': 'pve2 (active, Wed Feb 25 20:42:13 2026)', 'type': 'master'},
+            {'id': 'lrm:pve1', 'node': 'pve1', 'timestamp': 1772048534,
+             'status': 'pve1 (idle, Wed Feb 25 20:42:14 2026)', 'type': 'lrm'},
+            {'id': 'lrm:pve2', 'node': 'pve2', 'timestamp': 1772048535,
+             'status': 'pve2 (active, Wed Feb 25 20:42:15 2026)', 'type': 'lrm'},
+            {'id': 'lrm:pve3', 'node': 'pve3', 'timestamp': 1772048531,
+             'status': 'pve3 (active, Wed Feb 25 20:42:11 2026)', 'type': 'lrm'},
+            {'crm_state': 'started', 'group': 'grp1', 'id': 'service:vm:100',
+             'max_relocate': 1, 'max_restart': 1, 'node': 'pve3',
+             'request_state': 'started', 'sid': 'vm:100', 'state': 'started',
+             'status': 'vm:100 (pve3, started)', 'type': 'service'},
+            {'crm_state': 'started', 'group': 'grp2', 'id': 'service:vm:104',
+             'max_relocate': 1, 'max_restart': 1, 'node': 'pve2',
+             'request_state': 'started', 'sid': 'vm:104', 'state': 'started',
+             'status': 'vm:104 (pve2, started)', 'type': 'service'},
+            {'crm_state': 'started', 'group': 'grp2', 'id': 'service:vm:106',
+             'max_relocate': 1, 'max_restart': 1, 'node': 'pve2',
+             'request_state': 'started', 'sid': 'vm:106', 'state': 'started',
+             'status': 'vm:106 (pve2, started)', 'type': 'service'},
+            {'crm_state': 'started', 'group': 'grp2', 'id': 'service:vm:110',
+             'max_relocate': 1, 'max_restart': 1, 'node': 'pve3',
+             'request_state': 'started', 'sid': 'vm:110', 'state': 'started',
+             'status': 'vm:110 (pve3, started)', 'type': 'service'},
+            {'crm_state': 'stopped', 'group': 'grp2', 'id': 'service:vm:112',
+             'max_relocate': 1, 'max_restart': 1, 'node': 'pve1',
+             'request_state': 'stopped', 'sid': 'vm:112', 'state': 'stopped',
+             'status': 'vm:112 (pve1, stopped)', 'type': 'service'},
+        ]
+        result = _parse_ha_status(data)
+        self.assertEqual(result, ['vm:100', 'vm:104', 'vm:106', 'vm:110'])
 
 
 # ── _parse_running_vmids ──────────────────────────────────────────────────────

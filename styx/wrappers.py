@@ -55,13 +55,15 @@ def _parse_osd_tree(data):
     return result
 
 
-def _parse_ha_status(output):
-    """Return SIDs in 'started' state from ha-manager status output."""
+def _parse_ha_status(data):
+    """Return SIDs in 'started' state from /cluster/ha/status/current JSON.
+
+    Each entry has 'sid' (e.g. 'vm:100') and 'state' (e.g. 'started').
+    """
     return [
-        parts[0]
-        for line in output.splitlines()
-        for parts in [line.split()]
-        if len(parts) >= 2 and parts[1] == 'started'
+        entry['sid']
+        for entry in data
+        if entry.get('state') == 'started' and 'sid' in entry
     ]
 
 
@@ -176,10 +178,11 @@ class Operations:
     def get_ha_started_sids(self):
         try:
             r = subprocess.run(
-                ['ha-manager', 'status'],
-                capture_output=True, text=True, timeout=10,
+                ['pvesh', 'get', '/cluster/ha/status/current',
+                 '--output-format', 'json'],
+                capture_output=True, text=True, check=True, timeout=10,
             )
-            return _parse_ha_status(r.stdout)
+            return _parse_ha_status(json.loads(r.stdout))
         except Exception:
             return []
 
