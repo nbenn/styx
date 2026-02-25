@@ -198,12 +198,12 @@ class Operations:
         while time.monotonic() < deadline:
             try:
                 r = subprocess.run(
-                    ['ha-manager', 'status'],
-                    capture_output=True, text=True, timeout=10,
+                    ['pvesh', 'get', '/cluster/ha/status/current',
+                     '--output-format', 'json'],
+                    capture_output=True, text=True, check=True, timeout=10,
                 )
-                for line in r.stdout.splitlines():
-                    parts = line.split()
-                    if parts and parts[0] == sid and len(parts) >= 2 and parts[1] == 'disabled':
+                for entry in json.loads(r.stdout):
+                    if entry.get('sid') == sid and entry.get('state') == 'disabled':
                         return True
             except Exception:
                 pass
