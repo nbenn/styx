@@ -234,34 +234,32 @@ class TestDrain(unittest.TestCase):
         pods = [_pod('kube-apiserver', mirror=True)]
         responses = [
             _resp({}),              # cordon
-            _resp({'items': pods}), # list: only mirror pod — skip
-            _resp({'items': []}),   # poll: no drainable pods → done
+            _resp({'items': pods}), # list: only mirror pod — not drainable → done
         ]
         import styx.k8s as k8s_mod
         with patch('urllib.request.urlopen', side_effect=responses) as m:
             with patch.object(k8s_mod.time, 'sleep'):
                 _client().drain('cp1', timeout=60)
-        # cordon + list + poll = 3 calls; no eviction POST
-        self.assertEqual(m.call_count, 3)
+        # cordon + list = 2 calls; no drainable pods so loop exits immediately
+        self.assertEqual(m.call_count, 2)
 
     def test_daemonset_pods_not_evicted(self):
         pods      = [_pod('ds', owner_kind='DaemonSet')]
         responses = [
             _resp({}),              # cordon
-            _resp({'items': pods}), # list
-            _resp({'items': []}),   # poll → done
+            _resp({'items': pods}), # list: only DS pod — not drainable → done
         ]
         import styx.k8s as k8s_mod
         with patch('urllib.request.urlopen', side_effect=responses) as m:
             with patch.object(k8s_mod.time, 'sleep'):
                 _client().drain('worker1', timeout=60)
-        self.assertEqual(m.call_count, 3)
+        # cordon + list = 2 calls; no drainable pods so loop exits immediately
+        self.assertEqual(m.call_count, 2)
 
     def test_returns_true_when_already_empty(self):
         responses = [
             _resp({}),            # cordon
-            _resp({'items': []}), # list: nothing
-            _resp({'items': []}), # poll → done
+            _resp({'items': []}), # list: nothing → done
         ]
         import styx.k8s as k8s_mod
         with patch('urllib.request.urlopen', side_effect=responses):
@@ -284,10 +282,11 @@ class TestDrain(unittest.TestCase):
         pod       = _pod('slow')
         responses = [
             _resp({}),               # cordon
-            _resp({'items': [pod]}), # list
-            _resp({}),               # evict
-            _resp({'items': [pod]}), # poll 1: still there
-            _resp({'items': []}),    # poll 2: gone
+            _resp({'items': [pod]}), # loop 1: list — pod present
+            _resp({}),               # loop 1: evict
+            _resp({'items': [pod]}), # loop 2: list — still there
+            _resp({}),               # loop 2: re-evict
+            _resp({'items': []}),    # loop 3: list — gone → done
         ]
         import styx.k8s as k8s_mod
         with patch('urllib.request.urlopen', side_effect=responses):

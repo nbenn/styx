@@ -144,21 +144,21 @@ class K8sClient:
     def drain(self, node, timeout=120):
         """Cordon node, evict all drainable pods, poll until clear.
 
-        Returns True if all pods cleared within timeout, False otherwise.
+        Re-issues evictions on every poll so PDB-blocked pods are retried
+        once the budget allows.  Returns True if all pods cleared within
+        timeout, False otherwise.
         """
         self.cordon(node)
-
-        pods = self.list_pods_on_node(node)['items']
-        for pod in pods:
-            if self._drainable(pod):
-                self.evict(pod['metadata']['name'], pod['metadata']['namespace'])
 
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             pods = self.list_pods_on_node(node)['items']
-            if not any(self._drainable(p) for p in pods):
+            pending = [p for p in pods if self._drainable(p)]
+            if not pending:
                 return True
-            time.sleep(2)
+            for pod in pending:
+                self.evict(pod['metadata']['name'], pod['metadata']['namespace'])
+            time.sleep(5)
 
         return False
 
