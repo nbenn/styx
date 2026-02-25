@@ -820,7 +820,7 @@ If the main `styx` script is killed, backgrounded `styx-vm-shutdown` processes c
 
 ### Resolved: VM migration race
 
-Documented as a known limitation. Live migration during a power failure is extremely unlikely. Worst case: shutdown command hits the wrong host, fails to find PID file, exits 0 (idempotent). The `pvesh` resource data includes a `status` field that could potentially detect migrations — future enhancement if needed.
+Resolved. Preflight now detects in-progress migrations via `vm_lock == 'migrate'` and fails in dry-run/maintenance modes. Additionally, `_refresh_vm_topology()` re-fetches `/cluster/resources` right before dispatch so the VM→host mapping is as fresh as possible. If the API call fails (quorum lost, network down), styx proceeds with the stale data — it's the best available.
 
 ### Resolved: PID file cleanup after SIGKILL
 
@@ -847,7 +847,7 @@ Reviewed [proxmox-guardian](https://github.com/Guilhem-Bonnet/proxmox-guardian) 
 - **VMs only** (for now): LXC containers and Proxmox 9 OCI containers are not gracefully stopped. The workload type infrastructure is in place (`vm_type` threaded through discovery, dispatch, CLI, and polling; `local_shutdown.py` uses dispatch maps keyed by type), so adding a new workload requires implementing a handler, registering it, and widening the discovery filter. See Future Work for concrete next steps.
 - **Ceph on hosts only**: Ceph-in-VM topologies are not supported. Ceph OSD flags are set after VM shutdown commands are issued (before any host goes down), which is correct for on-host Ceph.
 - **No single-node support (v1)**: Styx assumes a multi-node Proxmox cluster. Single-node is a simpler problem and could be a stretch goal for v2.
-- **VM migration**: Do not run styx while a VM live migration is in progress. The VMID-to-host mapping is captured once at startup and not refreshed. A migrating VM may receive shutdown commands on the wrong host. The `pvesh` resource data includes a `status` field that could potentially detect migrations — this is a future enhancement if needed.
+- **VM migration**: Preflight detects in-progress migrations and blocks in dry-run/maintenance modes. VM→host mappings are refreshed right before dispatch. However, a migration that completes between the refresh and the SSH dispatch (a very narrow window) could still cause a shutdown command to target the wrong host — the command would fail harmlessly (no PID file found, exits 0).
 - **Orphaned shutdown processes**: If the main `styx` script is killed, backgrounded `styx-vm-shutdown` processes continue running. This is intentional — they will complete their VM shutdowns independently.
 - **CephFS teardown**: Clusters running CephFS could benefit from an explicit `ceph fs fail` + `ceph fs set cluster_down true` before shutdown, reversed on startup. Not implemented; CephFS clusters should verify filesystem health after recovery.
 - **MON-last host ordering**: Powering off the Proxmox host running the Ceph MON last would be ideal to maintain Ceph quorum as long as possible. This requires Ceph topology awareness (which hosts run MONs) that styx does not currently have. The polling loop powers off hosts as their VMs stop, which is correct but not MON-aware.
