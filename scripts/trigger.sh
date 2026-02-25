@@ -1,11 +1,11 @@
 #!/bin/bash
 #
-# ups-trigger.sh — Trigger styx on a remote node via SSH.
+# trigger.sh — Trigger styx on a remote node via SSH.
 #
 # Tries each controller in order until one responds. Any node can act as
 # orchestrator, so the first reachable controller wins.
 #
-# Usage: ups-trigger.sh --controllers HOST... [--key PATH] [--timeout SECS] [STYX_ARGS...]
+# Usage: trigger.sh --controllers HOST... [--key PATH] [--timeout SECS] [STYX_ARGS...]
 #   --controllers HOST...  Ordered list of node IPs/hostnames to try
 #   --key PATH             SSH private key (default: ~/.ssh/styx)
 #   --timeout SECS         SSH connect timeout per node (default: 5)
@@ -16,11 +16,11 @@
 # Default remote command: orchestrate --mode emergency
 #
 # Examples:
-#   ups-trigger.sh --controllers 10.0.0.1 10.0.0.2
-#   ups-trigger.sh --controllers 10.0.0.1 --mode dry-run
-#   ups-trigger.sh --controllers 10.0.0.1 --phase 2 --mode emergency
-#   ups-trigger.sh --controllers 10.0.0.1 --config /etc/styx/custom.conf
-#   ups-trigger.sh --controllers 10.0.0.1 -v
+#   trigger.sh --controllers 10.0.0.1 10.0.0.2
+#   trigger.sh --controllers 10.0.0.1 --mode dry-run
+#   trigger.sh --controllers 10.0.0.1 --phase 2 --mode emergency
+#   trigger.sh --controllers 10.0.0.1 --config /etc/styx/custom.conf
+#   trigger.sh --controllers 10.0.0.1 -v
 #
 # Exit codes:
 #   0  Shutdown triggered successfully
