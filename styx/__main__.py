@@ -4,7 +4,7 @@ import sys
 
 
 def main():
-    if len(sys.argv) >= 2 and sys.argv[1] == '--version':
+    if len(sys.argv) >= 2 and sys.argv[1] in ('-v', '--version'):
         from styx import __version__
         print(__version__)
         sys.exit(0)
@@ -23,7 +23,7 @@ Commands:
 
 Options:
   -h, --help      Show this help message
-  --version       Show version
+  -v, --version   Show version
 
 Run "styx <command> --help" for command-specific options.''', file=sys.stderr)
         sys.exit(0 if sys.argv[1:] else 1)
