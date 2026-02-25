@@ -459,7 +459,11 @@ def _dispatch_independent_phase(topo, config, ops, policy, do_poweroff,
 
 # ── polling loop ──────────────────────────────────────────────────────────────
 
-def run_polling_loop(topo, ops, policy, do_poweroff, poll_interval=None):
+_SSH_MAX_FAILURES = 3
+
+
+def run_polling_loop(topo, ops, policy, do_poweroff, poll_interval=None,
+                     timeout=None):
     if poll_interval is None:
         poll_interval = int(os.environ.get('STYX_POLL_INTERVAL', '10'))
 
@@ -471,13 +475,39 @@ def run_polling_loop(topo, ops, policy, do_poweroff, poll_interval=None):
                 log(f'[dry-run] would poweroff_host {host}')
         return
 
+    deadline = (time.monotonic() + timeout) if timeout is not None else None
+    ssh_failures = {h: 0 for h in topo.host_ips}
     powered_off = {topo.orchestrator}
     while True:
+        if deadline is not None and time.monotonic() >= deadline:
+            log('WARNING: polling loop global timeout expired — breaking')
+            break
+
         all_done = True
         for host in topo.host_ips:
             if host in powered_off and host != topo.orchestrator:
                 continue
-            running  = set(ops.get_running_vmids(host))
+            try:
+                running = set(ops.get_running_vmids(host))
+                ssh_failures[host] = 0
+            except Exception as e:
+                ssh_failures[host] += 1
+                if ssh_failures[host] >= _SSH_MAX_FAILURES:
+                    log(f'WARNING: {host}: {ssh_failures[host]} consecutive SSH failures '
+                        f'— treating as stopped')
+                    if host == topo.orchestrator:
+                        log('WARNING: orchestrator SSH exhausted — breaking')
+                        break
+                    if host not in powered_off:
+                        if do_poweroff:
+                            log(f'Host {host}: SSH unreachable — powering off')
+                            ops.poweroff_host(host)
+                        powered_off.add(host)
+                else:
+                    log(f'WARNING: {host}: SSH failure ({e}) — retry '
+                        f'{ssh_failures[host]}/{_SSH_MAX_FAILURES}')
+                    all_done = False
+                continue
             host_vms = {v for v, h in topo.vm_host.items() if h == host}
             still    = host_vms & running
             if still:
@@ -488,18 +518,36 @@ def run_polling_loop(topo, ops, policy, do_poweroff, poll_interval=None):
                     log(f'Host {host}: all VMs stopped — powering off')
                     ops.poweroff_host(host)
                 powered_off.add(host)
+        else:
+            # for-loop completed without break — check orchestrator
+            peers_done = all(h in powered_off for h in topo.host_ips
+                             if h != topo.orchestrator)
+            if all_done or peers_done:
+                try:
+                    orch_running = set(ops.get_running_vmids(topo.orchestrator))
+                    ssh_failures[topo.orchestrator] = 0
+                except Exception as e:
+                    ssh_failures[topo.orchestrator] += 1
+                    if ssh_failures[topo.orchestrator] >= _SSH_MAX_FAILURES:
+                        log('WARNING: orchestrator SSH exhausted — breaking')
+                        break
+                    log(f'WARNING: {topo.orchestrator}: SSH failure ({e}) — retry '
+                        f'{ssh_failures[topo.orchestrator]}/{_SSH_MAX_FAILURES}')
+                    time.sleep(poll_interval)
+                    continue
+                orch_vms = {v for v, h in topo.vm_host.items()
+                            if h == topo.orchestrator}
+                if not (orch_vms & orch_running):
+                    log('All VMs stopped (including orchestrator)')
+                    break
+                log(f'Waiting for orchestrator VMs: {orch_vms & orch_running}')
+                all_done = False
 
-        peers_done = all(h in powered_off for h in topo.host_ips if h != topo.orchestrator)
-        if all_done or peers_done:
-            orch_running = set(ops.get_running_vmids(topo.orchestrator))
-            orch_vms     = {v for v, h in topo.vm_host.items() if h == topo.orchestrator}
-            if not (orch_vms & orch_running):
-                log('All VMs stopped (including orchestrator)')
-                break
-            log(f'Waiting for orchestrator VMs: {orch_vms & orch_running}')
-            all_done = False
+            time.sleep(poll_interval)
+            continue
 
-        time.sleep(poll_interval)
+        # for-loop hit break (orchestrator SSH exhausted) — exit polling
+        break
 
 
 # ── revert summary (partial runs) ────────────────────────────────────────────
@@ -735,7 +783,8 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None, _preflight_fn=None)
     # Dispatch local-shutdown to each host (one SSH per peer)
     _dispatch_independent_phase(topo, config, ops, policy, do_poweroff)
 
-    run_polling_loop(topo, ops, policy, do_poweroff)
+    poll_timeout = config.timeout_vm + _VM_ESCALATION_OVERHEAD + 30
+    run_polling_loop(topo, ops, policy, do_poweroff, timeout=poll_timeout)
 
     # Log completion notes before potentially going dark (poweroff flushes nothing).
     if not policy.dry_run:

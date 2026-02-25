@@ -50,6 +50,7 @@ class FakeOperations:
     def __init__(self, run_dir, vm_host):
         self._run_dir = Path(run_dir)
         self._vm_host = vm_host   # vmid -> host
+        self._vmid_errors = {}    # host -> Exception; when set, get_running_vmids raises
 
         self.cordon_log   = []
         self.drain_log    = []
@@ -63,6 +64,8 @@ class FakeOperations:
         self._lock = threading.Lock()
 
     def get_running_vmids(self, host):
+        if host in self._vmid_errors:
+            raise self._vmid_errors[host]
         result = []
         for pid_file in self._run_dir.glob('*.pid'):
             vmid = pid_file.stem

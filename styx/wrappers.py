@@ -92,17 +92,14 @@ class Operations:
         return r.stdout
 
     def get_running_vmids(self, host):
-        try:
-            out = self.run_on_host(host, (
-                'for f in /var/run/qemu-server/*.pid; do '
-                '  [ -f "$f" ] || continue; '
-                '  pid=$(cat "$f"); '
-                '  kill -0 "$pid" 2>/dev/null && basename "$f" .pid; '
-                'done'
-            ))
-            return _parse_running_vmids(out)
-        except Exception:
-            return []
+        out = self.run_on_host(host, (
+            'for f in /var/run/qemu-server/*.pid; do '
+            '  [ -f "$f" ] || continue; '
+            '  pid=$(cat "$f"); '
+            '  kill -0 "$pid" 2>/dev/null && basename "$f" .pid; '
+            'done'
+        ))
+        return _parse_running_vmids(out)
 
     # ── VM lifecycle ──────────────────────────────────────────────────────────
 

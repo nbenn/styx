@@ -313,5 +313,116 @@ class TestLogStartupChecklist(unittest.TestCase):
         self.assertIn('uncordon', output)
 
 
+class TestPollingLoopTimeout(unittest.TestCase):
+    """Global timeout causes the polling loop to break."""
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp()
+
+    def tearDown(self):
+        kill_all_fake_vms(self._tmp)
+
+    def test_timeout_breaks_loop(self):
+        """VM stays running forever, small timeout → loop breaks."""
+        start_fake_vm('101', self._tmp)
+        vm_host = {'101': 'pve1'}
+        ops = FakeOperations(self._tmp, vm_host)
+        topo = _topo(
+            host_ips={'pve1': '10.0.0.1'},
+            vm_host=dict(vm_host),
+            vm_name={'101': 'infra'},
+            vm_type={'101': 'qemu'},
+        )
+        t0 = time.monotonic()
+        run_polling_loop(topo, ops, Policy(), do_poweroff=False,
+                         poll_interval=0.05, timeout=0.3)
+        elapsed = time.monotonic() - t0
+        self.assertLess(elapsed, 2.0, 'loop should have broken due to timeout')
+
+    def test_no_timeout_preserves_behavior(self):
+        """timeout=None (default) still works — loop exits when VMs stop."""
+        vm_host = {'211': 'pve2'}
+        ops = FakeOperations(self._tmp, vm_host)
+        topo = _topo(
+            vm_host=dict(vm_host),
+            vm_name={'211': 'w1'},
+            vm_type={'211': 'qemu'},
+        )
+        # VM 211 has no PID file → already stopped
+        run_polling_loop(topo, ops, Policy(), do_poweroff=False,
+                         poll_interval=0.05, timeout=None)
+
+
+class TestPollingLoopSSHRetry(unittest.TestCase):
+    """SSH failure retry logic in the polling loop."""
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp()
+
+    def tearDown(self):
+        kill_all_fake_vms(self._tmp)
+
+    def test_ssh_retry_exhaust_powers_off_peer(self):
+        """get_running_vmids raises 3 times for a peer → host gets powered off."""
+        vm_host = {'211': 'pve2'}
+        ops = FakeOperations(self._tmp, vm_host)
+        ops._vmid_errors['pve2'] = OSError('ssh connection refused')
+        topo = _topo(
+            vm_host=dict(vm_host),
+            vm_name={'211': 'w1'},
+            vm_type={'211': 'qemu'},
+        )
+        run_polling_loop(topo, ops, Policy(), do_poweroff=True,
+                         poll_interval=0.01)
+        self.assertIn('POWEROFF pve2', ops.poweroff_log)
+
+    def test_ssh_transient_failure_resets_counter(self):
+        """Fails once then succeeds → no premature poweroff."""
+        vm_host = {'211': 'pve2'}
+        ops = FakeOperations(self._tmp, vm_host)
+        topo = _topo(
+            vm_host=dict(vm_host),
+            vm_name={'211': 'w1'},
+            vm_type={'211': 'qemu'},
+        )
+        # VM 211 has no PID file → already stopped, so success path treats
+        # pve2 as done. We inject one transient error then clear it.
+        call_count = [0]
+        original_get = ops.get_running_vmids
+
+        def flaky_get(host):
+            if host == 'pve2':
+                call_count[0] += 1
+                if call_count[0] == 1:
+                    raise OSError('transient ssh failure')
+            return original_get(host)
+
+        ops.get_running_vmids = flaky_get
+        run_polling_loop(topo, ops, Policy(), do_poweroff=True,
+                         poll_interval=0.01)
+        # pve2 should be powered off normally (VMs stopped), not due to SSH exhaust
+        self.assertIn('POWEROFF pve2', ops.poweroff_log)
+
+    def test_orchestrator_ssh_exhaust_breaks_loop(self):
+        """Orchestrator SSH fails 3 times → loop breaks."""
+        vm_host = {'101': 'pve1'}
+        ops = FakeOperations(self._tmp, vm_host)
+        # Start a fake VM so the orchestrator has work to do
+        start_fake_vm('101', self._tmp)
+        topo = _topo(
+            host_ips={'pve1': '10.0.0.1'},
+            vm_host=dict(vm_host),
+            vm_name={'101': 'infra'},
+            vm_type={'101': 'qemu'},
+        )
+        # Inject error for orchestrator
+        ops._vmid_errors['pve1'] = OSError('ssh connection refused')
+        t0 = time.monotonic()
+        run_polling_loop(topo, ops, Policy(), do_poweroff=False,
+                         poll_interval=0.01)
+        elapsed = time.monotonic() - t0
+        self.assertLess(elapsed, 2.0, 'loop should break on orchestrator SSH exhaust')
+
+
 if __name__ == '__main__':
     unittest.main()
