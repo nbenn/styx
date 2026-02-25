@@ -7,6 +7,8 @@ Graceful cluster shutdown for Proxmox + Kubernetes + Ceph.
 
 Styx orchestrates a safe, ordered shutdown of your entire infrastructure stack — Kubernetes nodes first, then all VMs, then Ceph flags, then Proxmox hosts — designed to complete within a UPS battery window (typically 5–10 minutes).
 
+> **QEMU VMs only.** LXC and OCI containers are not gracefully stopped — they will be killed when the host powers off. Workload type infrastructure is in place for future support (see [design doc](docs/design.md#future-work)).
+
 ## How it works
 
 Styx splits the shutdown into a **coordinated phase** (requires cluster APIs) and an **independent phase** (each host acts autonomously):
@@ -260,10 +262,3 @@ python3 -m unittest discover -s test -p 'test_*.py'
 ```
 
 Unit tests cover pure decision logic and fixture-based parsing (no infrastructure needed). Integration tests run a full shutdown sequence using fake wrappers and simulated PID files.
-
-## Scope and limitations
-
-- **VMs only** (for now): LXC and OCI containers are not gracefully stopped. Workload type infrastructure is in place for future support — see [Future Work](docs/design.md#future-work)
-- **Ceph on Proxmox hosts only**: Ceph-in-VM is not supported
-- **Multi-node clusters only**: single-node Proxmox is not supported in v1
-- **Live migration aware**: in-progress migrations are detected during preflight, and VM→host mappings are refreshed right before dispatch
