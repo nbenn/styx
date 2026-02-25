@@ -145,7 +145,11 @@ def _try_refresh(topo, args, *, _pvesh_fn=None):
     if _refresh_vm_topology(topo, _pvesh_fn=_pvesh_fn):
         if args.hosts:
             _apply_hosts_filter(topo, args.hosts)
-        log(f'Refreshed VM topology: {" ".join(topo.vm_host)}')
+        by_host = {}
+        for vmid, host in topo.vm_host.items():
+            by_host.setdefault(host, []).append(vmid)
+        lines = [f'  {h}: {" ".join(vms)}' for h, vms in sorted(by_host.items())]
+        log('Refreshed VM topology:\n' + '\n'.join(lines))
     else:
         log('Proceeding with stale VM topology')
 
