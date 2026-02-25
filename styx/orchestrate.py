@@ -151,7 +151,7 @@ def _try_refresh(topo, args, *, _pvesh_fn=None):
     """Refresh VM topology; re-apply hosts filter if needed."""
     if _refresh_vm_topology(topo, _pvesh_fn=_pvesh_fn):
         if args.hosts:
-            _apply_hosts_filter(topo, args.hosts)
+            _apply_hosts_filter(topo, args.hosts, quiet=True)
         by_host = {}
         for vmid, host in topo.vm_host.items():
             by_host.setdefault(host, []).append(vmid)
@@ -167,7 +167,7 @@ _VM_ESCALATION_OVERHEAD = 15
 
 # ── hosts filter ─────────────────────────────────────────────────────────────
 
-def _apply_hosts_filter(topo, hosts):
+def _apply_hosts_filter(topo, hosts, quiet=False):
     """Restrict topo to only the given hosts.
 
     Orchestrator is always kept in host_ips (needed for SSH/polling) but its
@@ -188,8 +188,9 @@ def _apply_hosts_filter(topo, hosts):
     topo.k8s_cp      = [v for v in topo.k8s_cp      if v in topo.vm_host]
     if not topo.k8s_workers and not topo.k8s_cp:
         topo.k8s_enabled = False
-    log(f'--hosts filter: shutting down {" ".join(sorted(shutdown_hosts))} '
-        f'({len(topo.vm_host)} VM(s))')
+    if not quiet:
+        log(f'--hosts filter: shutting down {" ".join(sorted(shutdown_hosts))} '
+            f'({len(topo.vm_host)} VM(s))')
     return topo
 
 
@@ -360,12 +361,13 @@ def _disable_ha(topo, ops, policy, scope):
         set(topo.k8s_workers + topo.k8s_cp) if scope == 'k8s'
         else set(topo.vm_host)   # 'all' — only VMs we're actually shutting down
     )
-    log(f'Disabling HA resources (scope: {scope})')
-    for sid in ops.get_ha_started_sids():
-        vmid = sid.split(':', 1)[-1] if ':' in sid else sid
-        if vmid not in target:
-            continue
-        log(f'Disabling HA: {sid}')
+    sids = [sid for sid in ops.get_ha_started_sids()
+            if (sid.split(':', 1)[-1] if ':' in sid else sid) in target]
+    if not sids:
+        log('No HA resources to disable')
+        return
+    log(f'--- Disabling HA: {" ".join(sids)} ---')
+    for sid in sids:
         try:
             policy.execute(f'disable_ha_sid {sid}', ops.disable_ha_sid, sid)
             if not policy.dry_run:
@@ -401,7 +403,7 @@ def _drain_all_k8s(topo, config, ops, policy):
     if not topo.k8s_enabled or (not topo.k8s_workers and not topo.k8s_cp):
         return
 
-    log('--- Draining all k8s nodes ---')
+    log('--- Draining k8s nodes ---')
 
     cp_set = set(topo.k8s_cp)
 
@@ -737,7 +739,7 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None, _preflight_fn=None)
 
     # Cordon all k8s nodes (idempotent)
     if topo.k8s_enabled:
-        log('--- Cordoning all k8s nodes ---')
+        log('--- Cordoning k8s nodes ---')
         for vmid in topo.k8s_workers + topo.k8s_cp:
             node = topo.vm_name.get(vmid, vmid)
             log(f'Cordoning: {node}')
