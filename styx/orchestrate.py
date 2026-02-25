@@ -78,13 +78,13 @@ def discover(config, *, _pvesh_fn=None, _pveceph_fn=None, _on_warning=None):
 
     # VMs
     try:
-        topo.vm_host, topo.vm_name, topo.vm_type = parse_cluster_resources(
+        topo.vm_host, topo.vm_name, topo.vm_type, topo.vm_lock = parse_cluster_resources(
             pvesh('/cluster/resources', '--type', 'vm')
         )
         log(f'Running VMs: {" ".join(topo.vm_host)}')
     except Exception as e:
         (_on_warning or log)(f'VM discovery failed ({e}) — proceeding with empty VM list')
-        topo.vm_host, topo.vm_name, topo.vm_type = {}, {}, {}
+        topo.vm_host, topo.vm_name, topo.vm_type, topo.vm_lock = {}, {}, {}, {}
 
     # Kubernetes — config override, then API auto-discovery
     if config.workers or config.control_plane:
@@ -121,6 +121,36 @@ def discover(config, *, _pvesh_fn=None, _pveceph_fn=None, _on_warning=None):
     return topo
 
 
+def _refresh_vm_topology(topo, *, _pvesh_fn=None):
+    """Re-fetch VM placement from Proxmox API and update topo in-place.
+
+    Returns True on success, False on failure (stale data kept).
+    """
+    pvesh = _pvesh_fn or _pvesh
+    try:
+        vm_host, vm_name, vm_type, vm_lock = parse_cluster_resources(
+            pvesh('/cluster/resources', '--type', 'vm')
+        )
+        topo.vm_host = vm_host
+        topo.vm_name = vm_name
+        topo.vm_type = vm_type
+        topo.vm_lock = vm_lock
+        return True
+    except Exception as e:
+        log(f'VM topology refresh failed ({e}) — using stale data')
+        return False
+
+
+def _try_refresh(topo, args, *, _pvesh_fn=None):
+    """Refresh VM topology; re-apply hosts filter if needed."""
+    if _refresh_vm_topology(topo, _pvesh_fn=_pvesh_fn):
+        if args.hosts:
+            _apply_hosts_filter(topo, args.hosts)
+        log(f'Refreshed VM topology: {" ".join(topo.vm_host)}')
+    else:
+        log('Proceeding with stale VM topology')
+
+
 # Fixed escalation overhead in vm_shutdown.py: SIGTERM(10s) + SIGKILL(5s)
 _VM_ESCALATION_OVERHEAD = 15
 
@@ -143,6 +173,7 @@ def _apply_hosts_filter(topo, hosts):
     topo.vm_host     = {v: h  for v, h  in topo.vm_host.items()  if h in shutdown_hosts}
     topo.vm_name     = {v: n  for v, n  in topo.vm_name.items()  if v in topo.vm_host}
     topo.vm_type     = {v: t  for v, t  in topo.vm_type.items()  if v in topo.vm_host}
+    topo.vm_lock     = {v: l  for v, l  in topo.vm_lock.items()  if v in topo.vm_host}
     topo.k8s_workers = [v for v in topo.k8s_workers if v in topo.vm_host]
     topo.k8s_cp      = [v for v in topo.k8s_cp      if v in topo.vm_host]
     if not topo.k8s_workers and not topo.k8s_cp:
@@ -201,6 +232,13 @@ def preflight(topo, config, policy):
             except Exception as e:
                 log(f'styx {host}: NOT AVAILABLE ({e})')
                 failures.append(f'styx not available: {host}')
+
+    # ── VM migration ───────────────────────────────────────────────────
+    migrating = [f'{vmid} ({topo.vm_name.get(vmid, vmid)})'
+                 for vmid, lock in topo.vm_lock.items() if lock == 'migrate']
+    if migrating:
+        log(f'VMs migrating: {" ".join(migrating)}')
+        failures.append(f'VM migration in progress: {" ".join(migrating)}')
 
     # ── Kubernetes health ─────────────────────────────────────────────────
     if topo.k8s_enabled and config.k8s_server and config.k8s_token:
@@ -640,6 +678,7 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None, _preflight_fn=None)
 
     # Phase 1: dispatch for k8s VMs only, no poll, return
     if not should_run_polling(args.phase):
+        _try_refresh(topo, args)
         k8s_vmids = set(topo.k8s_workers + topo.k8s_cp)
         _dispatch_independent_phase(topo, config, ops, policy,
                                     do_poweroff=False, vm_filter=k8s_vmids)
@@ -667,6 +706,9 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None, _preflight_fn=None)
     if should_set_ceph_flags(args.phase) and topo.ceph_enabled:
         log('--- Setting Ceph OSD flags ---')
         policy.execute('set_ceph_flags', ops.set_ceph_flags, ceph_flags)
+
+    # Refresh VM topology right before dispatch (VMs may have migrated during drains)
+    _try_refresh(topo, args)
 
     # Dispatch local-shutdown to each host (one SSH per peer)
     _dispatch_independent_phase(topo, config, ops, policy, do_poweroff)

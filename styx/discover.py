@@ -15,6 +15,7 @@ class ClusterTopology:
     vm_type:     dict = field(default_factory=dict)   # vmid -> 'qemu' | 'lxc'
     k8s_workers: list = field(default_factory=list)   # VMIDs
     k8s_cp:      list = field(default_factory=list)   # VMIDs
+    vm_lock:     dict = field(default_factory=dict)   # vmid -> lock string
     k8s_enabled: bool = False
     ceph_enabled: bool = False
 
@@ -34,13 +35,15 @@ def parse_cluster_status(data):
 
 
 def parse_cluster_resources(data):
-    """Parse /cluster/resources JSON list. Returns (vm_host, vm_name, vm_type).
+    """Parse /cluster/resources JSON list. Returns (vm_host, vm_name, vm_type, vm_lock).
 
     Filters to running non-template QEMU VMs only.
+    vm_lock maps VMID to lock string, only for VMs that have a lock set.
     """
     vm_host = {}
     vm_name = {}
     vm_type = {}
+    vm_lock = {}
     for vm in data:
         if vm.get('type') != 'qemu':
             continue
@@ -52,7 +55,10 @@ def parse_cluster_resources(data):
         vm_host[vmid] = vm.get('node', '')
         vm_name[vmid] = vm.get('name', '')
         vm_type[vmid] = 'qemu'
-    return vm_host, vm_name, vm_type
+        lock = vm.get('lock')
+        if lock:
+            vm_lock[vmid] = lock
+    return vm_host, vm_name, vm_type, vm_lock
 
 
 def match_nodes_to_vms(vm_name, node_roles):

@@ -14,6 +14,7 @@ def _topo():
     t.vm_name      = {'101': 'pve1-vm', '201': 'k8s-worker-1',
                       '301': 'k8s-cp-1', '302': 'pve3-vm'}
     t.vm_type      = {'101': 'qemu', '201': 'qemu', '301': 'qemu', '302': 'qemu'}
+    t.vm_lock      = {'201': 'migrate'}
     t.k8s_workers  = ['201']
     t.k8s_cp       = ['301']
     t.k8s_enabled  = True
@@ -103,6 +104,19 @@ class TestApplyHostsFilter(unittest.TestCase):
         self.assertIn('302', t.vm_type)
         self.assertNotIn('201', t.vm_type)
         self.assertNotIn('101', t.vm_type)
+
+    # ── vm_lock ──────────────────────────────────────────────────────────────
+
+    def test_vm_lock_filtered_to_targeted_hosts(self):
+        t = _apply_hosts_filter(_topo(), ['pve3'])
+        # 201 is on pve2 (not targeted) — its lock should be removed
+        self.assertNotIn('201', t.vm_lock)
+
+    def test_vm_lock_kept_for_targeted_vms(self):
+        topo = _topo()
+        topo.vm_lock = {'301': 'migrate'}
+        t = _apply_hosts_filter(topo, ['pve3'])
+        self.assertIn('301', t.vm_lock)
 
     # ── edge cases ────────────────────────────────────────────────────────────
 

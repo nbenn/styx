@@ -47,37 +47,50 @@ class TestParseClusterStatus(unittest.TestCase):
 
 class TestParseClusterResources(unittest.TestCase):
 
-    def _vm(self, vmid, name, node, status='running', template=0):
-        return {'type': 'qemu', 'vmid': vmid, 'name': name,
-                'node': node, 'status': status, 'template': template}
+    def _vm(self, vmid, name, node, status='running', template=0, lock=None):
+        d = {'type': 'qemu', 'vmid': vmid, 'name': name,
+             'node': node, 'status': status, 'template': template}
+        if lock is not None:
+            d['lock'] = lock
+        return d
 
     def test_extracts_running_vms(self):
         data = [self._vm(101, 'web', 'pve1'), self._vm(102, 'db', 'pve2')]
-        vm_host, vm_name, vm_type = parse_cluster_resources(data)
+        vm_host, vm_name, vm_type, _ = parse_cluster_resources(data)
         self.assertEqual(vm_host['101'], 'pve1')
         self.assertEqual(vm_name['102'], 'db')
 
     def test_vm_type_is_qemu(self):
         data = [self._vm(101, 'web', 'pve1'), self._vm(102, 'db', 'pve2')]
-        _, _, vm_type = parse_cluster_resources(data)
+        _, _, vm_type, _ = parse_cluster_resources(data)
         self.assertEqual(vm_type['101'], 'qemu')
         self.assertEqual(vm_type['102'], 'qemu')
 
     def test_excludes_stopped_vms(self):
         data = [self._vm(101, 'web', 'pve1', status='stopped')]
-        vm_host, _, _ = parse_cluster_resources(data)
+        vm_host, _, _, _ = parse_cluster_resources(data)
         self.assertNotIn('101', vm_host)
 
     def test_excludes_templates(self):
         data = [self._vm(101, 'tmpl', 'pve1', template=1)]
-        vm_host, _, _ = parse_cluster_resources(data)
+        vm_host, _, _, _ = parse_cluster_resources(data)
         self.assertNotIn('101', vm_host)
 
     def test_excludes_lxc_containers(self):
         data = [{'type': 'lxc', 'vmid': 200, 'name': 'ct',
                  'node': 'pve1', 'status': 'running', 'template': 0}]
-        vm_host, _, _ = parse_cluster_resources(data)
+        vm_host, _, _, _ = parse_cluster_resources(data)
         self.assertNotIn('200', vm_host)
+
+    def test_vm_with_lock_appears_in_vm_lock(self):
+        data = [self._vm(101, 'web', 'pve1', lock='migrate')]
+        _, _, _, vm_lock = parse_cluster_resources(data)
+        self.assertEqual(vm_lock['101'], 'migrate')
+
+    def test_vm_without_lock_not_in_vm_lock(self):
+        data = [self._vm(101, 'web', 'pve1')]
+        _, _, _, vm_lock = parse_cluster_resources(data)
+        self.assertNotIn('101', vm_lock)
 
 
 class TestMatchNodesToVms(unittest.TestCase):
@@ -148,7 +161,7 @@ class TestClusterResourcesFixture(unittest.TestCase):
 
     def setUp(self):
         data = _pvesh('cluster_resources.json')
-        self.vm_host, self.vm_name, self.vm_type = parse_cluster_resources(data)
+        self.vm_host, self.vm_name, self.vm_type, self.vm_lock = parse_cluster_resources(data)
 
     def test_running_qemu_vms_included(self):
         for vmid in ('101', '102', '201', '211', '212', '213'):
@@ -187,14 +200,19 @@ class TestClusterResourcesMigrationFixture(unittest.TestCase):
 
     def test_migrating_vm_included(self):
         data = _pvesh('cluster_resources_migration.json')
-        vm_host, _, _ = parse_cluster_resources(data)
+        vm_host, _, _, _ = parse_cluster_resources(data)
         self.assertIn('212', vm_host)
 
     def test_migrating_vm_node_is_current_location(self):
         data = _pvesh('cluster_resources_migration.json')
-        vm_host, _, _ = parse_cluster_resources(data)
+        vm_host, _, _, _ = parse_cluster_resources(data)
         # VM 212 migrated to pve3 — shutdown command must go to its new host
         self.assertEqual(vm_host['212'], 'pve3')
+
+    def test_migrating_vm_lock_captured(self):
+        data = _pvesh('cluster_resources_migration.json')
+        _, _, _, vm_lock = parse_cluster_resources(data)
+        self.assertEqual(vm_lock['212'], 'migrate')
 
 
 if __name__ == '__main__':

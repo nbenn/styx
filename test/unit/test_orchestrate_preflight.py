@@ -686,5 +686,36 @@ class TestPreflightEmergencyNeverAborts(unittest.TestCase):
         # but unreachable hosts themselves are already counted
 
 
+# ── VM Migration ──────────────────────────────────────────────────────────────
+
+class TestPreflightMigration(unittest.TestCase):
+
+    def test_migration_fatal_in_dryrun(self):
+        topo = _topo(vm_lock={'212': 'migrate'})
+        with mock.patch('styx.orchestrate.subprocess.run', side_effect=_subprocess_default):
+            with self.assertRaises(SystemExit):
+                preflight(topo, _cfg(), DryRunPolicy())
+
+    def test_migration_warning_in_emergency(self):
+        topo = _topo(vm_lock={'212': 'migrate'})
+        with mock.patch('styx.orchestrate.subprocess.run', side_effect=_subprocess_default):
+            preflight(topo, _cfg(), Policy())  # must not raise
+
+    def test_migration_detected(self):
+        topo = _topo(vm_lock={'212': 'migrate'})
+        spy = _SpyPolicy()
+        with mock.patch('styx.orchestrate.subprocess.run', side_effect=_subprocess_default):
+            preflight(topo, _cfg(), spy)
+        self.assertEqual(len(spy.preflight_failure_calls), 1)
+        self.assertIn('VM migration in progress', spy.preflight_failure_calls[0])
+
+    def test_no_migration_no_failure(self):
+        topo = _topo(vm_lock={})
+        spy = _SpyPolicy()
+        with mock.patch('styx.orchestrate.subprocess.run', side_effect=_subprocess_default):
+            preflight(topo, _cfg(), spy)
+        self.assertEqual(spy.preflight_failure_calls, [])
+
+
 if __name__ == '__main__':
     unittest.main()
