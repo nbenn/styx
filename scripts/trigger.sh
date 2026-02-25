@@ -1,52 +1,70 @@
 #!/bin/bash
 #
-# ups-trigger.sh — Trigger styx cluster shutdown via SSH.
+# ups-trigger.sh — Trigger styx on a remote node via SSH.
 #
-# Tries each node in order until one responds. Any node can act as
-# orchestrator, so the first reachable node wins.
+# Tries each controller in order until one responds. Any node can act as
+# orchestrator, so the first reachable controller wins.
 #
-# Usage: ups-trigger.sh [--mode MODE] [--key PATH] [--timeout SECS] [-v] NODES...
-#   --mode MODE     Styx mode: dry-run, emergency, maintenance (default: emergency)
-#   --key PATH      SSH private key (default: ~/.ssh/styx)
-#   --timeout SECS  SSH connect timeout per node (default: 5)
-#   -v, --version   Show remote styx version
-#   -h, --help      Show this help message
-#   NODES           Ordered list of node IPs/hostnames to try
+# Usage: ups-trigger.sh --controllers HOST... [--key PATH] [--timeout SECS] [STYX_ARGS...]
+#   --controllers HOST...  Ordered list of node IPs/hostnames to try
+#   --key PATH             SSH private key (default: ~/.ssh/styx)
+#   --timeout SECS         SSH connect timeout per node (default: 5)
+#   -v, --version          Show remote styx version
+#   -h, --help             Show this help message
+#   STYX_ARGS              All other flags are forwarded to styx orchestrate
+#
+# Default remote command: orchestrate --mode emergency
+#
+# Examples:
+#   ups-trigger.sh --controllers 10.0.0.1 10.0.0.2
+#   ups-trigger.sh --controllers 10.0.0.1 --mode dry-run
+#   ups-trigger.sh --controllers 10.0.0.1 --phase 2 --mode emergency
+#   ups-trigger.sh --controllers 10.0.0.1 --config /etc/styx/custom.conf
+#   ups-trigger.sh --controllers 10.0.0.1 -v
 #
 # Exit codes:
 #   0  Shutdown triggered successfully
-#   1  All nodes unreachable
+#   1  All controllers unreachable
 
 set -euo pipefail
 
-MODE="emergency"
 KEY="${HOME}/.ssh/styx"
 TIMEOUT=5
-NODES=()
+CONTROLLERS=()
+STYX_ARGS=()
 styx_cmd=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --mode)       MODE="$2"; shift 2 ;;
+        --controllers)
+            shift
+            while [[ $# -gt 0 && ! "$1" =~ ^- ]]; do
+                CONTROLLERS+=("$1"); shift
+            done
+            ;;
         --key)        KEY="$2"; shift 2 ;;
         --timeout)    TIMEOUT="$2"; shift 2 ;;
         -v|--version) styx_cmd="--version"; shift ;;
-        -h|--help)    sed -n '3,16s/^# //p' "$0"; exit 0 ;;
-        -*)           echo "Unknown option: $1" >&2; exit 1 ;;
-        *)            NODES+=("$1"); shift ;;
+        -h|--help)    sed -n '3,27s/^# //p' "$0"; exit 0 ;;
+        -*)           STYX_ARGS+=("$1"); shift ;;
+        *)            STYX_ARGS+=("$1"); shift ;;
     esac
 done
 
-if [[ ${#NODES[@]} -eq 0 ]]; then
-    echo "No nodes specified." >&2
+if [[ ${#CONTROLLERS[@]} -eq 0 ]]; then
+    echo "No controllers specified. Use --controllers HOST..." >&2
     exit 1
 fi
 
 if [[ -z "$styx_cmd" ]]; then
-    styx_cmd="orchestrate --mode ${MODE}"
+    if [[ ${#STYX_ARGS[@]} -gt 0 ]]; then
+        styx_cmd="orchestrate ${STYX_ARGS[*]}"
+    else
+        styx_cmd="orchestrate --mode emergency"
+    fi
 fi
 
-for node in "${NODES[@]}"; do
+for node in "${CONTROLLERS[@]}"; do
     echo "Trying ${node}..."
     if ssh -o ConnectTimeout="$TIMEOUT" \
            -o BatchMode=yes \
@@ -60,5 +78,5 @@ for node in "${NODES[@]}"; do
     fi
 done
 
-echo "ERROR: all nodes unreachable." >&2
+echo "ERROR: all controllers unreachable." >&2
 exit 1
