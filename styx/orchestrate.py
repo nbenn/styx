@@ -73,14 +73,19 @@ def discover(config, *, _pvesh_fn=None, _pveceph_fn=None, _on_warning=None):
     if config.orchestrator:
         topo.orchestrator = config.orchestrator
     log(f'Orchestrator: {topo.orchestrator}')
-    log(f'Hosts: {" ".join(f"{h}({ip})" for h, ip in topo.host_ips.items())}')
+    host_lines = [f'  {h} ({ip})' for h, ip in sorted(topo.host_ips.items())]
+    log('Hosts:\n' + '\n'.join(host_lines))
 
     # VMs
     try:
         topo.vm_host, topo.vm_name, topo.vm_type, topo.vm_lock = parse_cluster_resources(
             pvesh('/cluster/resources', '--type', 'vm')
         )
-        log(f'Running VMs: {" ".join(topo.vm_host)}')
+        by_host = {}
+        for vmid, host in topo.vm_host.items():
+            by_host.setdefault(host, []).append(vmid)
+        vm_lines = [f'  {h}: {" ".join(vms)}' for h, vms in sorted(by_host.items())]
+        log('Running VMs:\n' + '\n'.join(vm_lines))
     except Exception as e:
         (_on_warning or log)(f'VM discovery failed ({e}) — proceeding with empty VM list')
         topo.vm_host, topo.vm_name, topo.vm_type, topo.vm_lock = {}, {}, {}, {}
@@ -90,16 +95,18 @@ def discover(config, *, _pvesh_fn=None, _pveceph_fn=None, _on_warning=None):
         topo.k8s_workers  = list(config.workers)
         topo.k8s_cp       = list(config.control_plane)
         topo.k8s_enabled  = True
-        log(f'Kubernetes: config override '
-            f'(workers={topo.k8s_workers} cp={topo.k8s_cp})')
+        log('Kubernetes: config override\n'
+            f'  workers: {" ".join(topo.k8s_workers)}\n'
+            f'  control-plane: {" ".join(topo.k8s_cp)}')
     elif config.k8s_server and config.k8s_token:
         try:
             k8s        = _make_k8s_client(config)
             node_roles = k8s.get_node_roles()
             topo.k8s_workers, topo.k8s_cp = match_nodes_to_vms(topo.vm_name, node_roles)
             topo.k8s_enabled = True
-            log(f'Kubernetes: API discovery '
-                f'(workers={topo.k8s_workers} cp={topo.k8s_cp})')
+            log('Kubernetes: API discovery\n'
+                f'  workers: {" ".join(topo.k8s_workers)}\n'
+                f'  control-plane: {" ".join(topo.k8s_cp)}')
         except ValueError as e:
             (_on_warning or log)(f'Kubernetes node/VM name mismatch: {e}')
             topo.k8s_enabled = False
@@ -770,15 +777,16 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None, _preflight_fn=None)
     osd_noout_ids = []
     if should_set_ceph_flags(args.phase) and topo.ceph_enabled:
         if args.hosts:
-            log('--- Setting per-OSD noout flags ---')
             osd_noout_ids = ops.get_osds_for_hosts(args.hosts)
             if osd_noout_ids:
+                osd_list = ' '.join(f'osd.{i}' for i in osd_noout_ids)
+                log(f'--- Setting per-OSD noout: {osd_list} ---')
                 policy.execute('set_osd_noout', ops.set_osd_noout, osd_noout_ids)
             else:
                 log('WARNING: no OSDs found for target hosts — skipping per-OSD noout')
         else:
             ceph_flags = config.ceph_flags
-            log('--- Setting Ceph OSD flags ---')
+            log(f'--- Setting Ceph OSD flags: {" ".join(ceph_flags)} ---')
             policy.execute('set_ceph_flags', ops.set_ceph_flags, ceph_flags)
 
     # Refresh VM topology right before dispatch (VMs may have migrated during drains)
