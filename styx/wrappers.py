@@ -3,6 +3,7 @@
 Inject a subclass or mock in tests to avoid real SSH / CLI calls.
 """
 
+import json
 import subprocess
 import sys
 import time
@@ -35,6 +36,23 @@ def _styx_cmd():
     """
     pyz = _local_pyz()
     return f'python3 {pyz}' if pyz else 'python3 -m styx'
+
+
+def _parse_osd_tree(data):
+    """Parse ``ceph osd tree --format json`` into hostname → OSD-ID list.
+
+    Returns dict[str, list[str]], e.g. ``{'pve2': ['2', '5', '8']}``.
+    """
+    nodes_by_id = {n['id']: n for n in data.get('nodes', [])}
+    result = {}
+    for node in data.get('nodes', []):
+        if node.get('type') != 'host':
+            continue
+        hostname = node.get('name', '')
+        osd_ids = [str(cid) for cid in node.get('children', [])
+                   if nodes_by_id.get(cid, {}).get('type') == 'osd']
+        result[hostname] = osd_ids
+    return result
 
 
 def _parse_ha_status(output):
@@ -197,6 +215,30 @@ class Operations:
     def set_ceph_flags(self, flags):
         for flag in flags:
             subprocess.run(['ceph', 'osd', 'set', flag], check=True, timeout=10)
+
+    def get_osds_for_hosts(self, hosts):
+        """Return list of OSD ID strings for the given hostnames."""
+        try:
+            r = subprocess.run(
+                ['ceph', 'osd', 'tree', '--format', 'json'],
+                capture_output=True, text=True, check=True, timeout=30,
+            )
+            tree = _parse_osd_tree(json.loads(r.stdout))
+            osd_ids = []
+            for host in hosts:
+                osd_ids.extend(tree.get(host, []))
+            return osd_ids
+        except Exception as e:
+            log(f'WARNING: failed to get OSDs for hosts: {e}')
+            return []
+
+    def set_osd_noout(self, osd_ids):
+        """Set noout flag on individual OSDs."""
+        for osd_id in osd_ids:
+            subprocess.run(
+                ['ceph', 'osd', 'add-noout', f'osd.{osd_id}'],
+                check=True, timeout=10,
+            )
 
     # ── host power ────────────────────────────────────────────────────────────
 

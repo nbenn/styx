@@ -17,7 +17,6 @@ from styx.discover import (
     ClusterTopology, parse_cluster_status, parse_cluster_resources,
     match_nodes_to_vms,
 )
-from styx.config import DEFAULT_CEPH_FLAGS_PARTIAL
 from styx import __version__
 from styx.policy import Policy, DryRunPolicy, MaintenancePolicy, log, setup_log_file
 from styx.wrappers import Operations, _local_pyz
@@ -505,11 +504,18 @@ def run_polling_loop(topo, ops, policy, do_poweroff, poll_interval=None):
 
 # ── revert summary (partial runs) ────────────────────────────────────────────
 
-def _log_startup_checklist(topo, ceph_flags_set):
+def _log_startup_checklist(topo, ceph_flags_set, osd_noout_ids=None):
     """Log steps to run after bringing a fully-shutdown cluster back up."""
+    if osd_noout_ids is None:
+        osd_noout_ids = []
     items = []
 
-    if ceph_flags_set:
+    if osd_noout_ids:
+        osd_list = ' '.join(f'osd.{i}' for i in osd_noout_ids)
+        cmds = '  '.join(f'ceph osd rm-noout osd.{i}' for i in osd_noout_ids)
+        items.append((f'Per-OSD noout set: {osd_list}',
+                      cmds))
+    elif ceph_flags_set:
         flags = ' '.join(ceph_flags_set)
         items.append((f'Ceph OSD flags set: {flags}',
                       f'(after Ceph healthy) ceph osd unset {flags}'))
@@ -528,14 +534,21 @@ def _log_startup_checklist(topo, ceph_flags_set):
         log(f'    → {cmd}')
 
 
-def _log_revert_summary(topo, args, ceph_flags_set):
+def _log_revert_summary(topo, args, ceph_flags_set, osd_noout_ids=None):
     """Log a checklist of manual steps needed to restore normal cluster state.
 
     Called at the end of every --hosts run (skip in dry-run: nothing changed).
     """
+    if osd_noout_ids is None:
+        osd_noout_ids = []
     log('--- Partial run complete — revert checklist ---')
 
-    if ceph_flags_set:
+    if osd_noout_ids:
+        osd_list = ' '.join(f'osd.{i}' for i in osd_noout_ids)
+        log(f'  Per-OSD noout set: {osd_list}')
+        for i in osd_noout_ids:
+            log(f'    → ceph osd rm-noout osd.{i}')
+    elif ceph_flags_set:
         flags = ' '.join(ceph_flags_set)
         log(f'  Ceph OSD flags set: {flags}')
         log(f'    → ceph osd unset {flags}')
@@ -699,14 +712,22 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None, _preflight_fn=None)
     # ── INDEPENDENT PHASE ─────────────────────────────────────────────────
 
     # Ceph flags (phase 3 only, before dispatch).
-    # Partial runs use a reduced set: noout only (prevents mark-out timer);
-    # the recovery/rebalance/backfill/nodown flags are full-shutdown-only.
-    ceph_flags = (
-        config.ceph_flags_partial if args.hosts else config.ceph_flags
-    )
+    # Partial runs set per-OSD noout on only the target hosts' OSDs;
+    # full-cluster runs set global flags (noout + norebalance etc.).
+    ceph_flags = []
+    osd_noout_ids = []
     if should_set_ceph_flags(args.phase) and topo.ceph_enabled:
-        log('--- Setting Ceph OSD flags ---')
-        policy.execute('set_ceph_flags', ops.set_ceph_flags, ceph_flags)
+        if args.hosts:
+            log('--- Setting per-OSD noout flags ---')
+            osd_noout_ids = ops.get_osds_for_hosts(args.hosts)
+            if osd_noout_ids:
+                policy.execute('set_osd_noout', ops.set_osd_noout, osd_noout_ids)
+            else:
+                log('WARNING: no OSDs found for target hosts — skipping per-OSD noout')
+        else:
+            ceph_flags = config.ceph_flags
+            log('--- Setting Ceph OSD flags ---')
+            policy.execute('set_ceph_flags', ops.set_ceph_flags, ceph_flags)
 
     # Refresh VM topology right before dispatch (VMs may have migrated during drains)
     _try_refresh(topo, args)
@@ -718,15 +739,10 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None, _preflight_fn=None)
 
     # Log completion notes before potentially going dark (poweroff flushes nothing).
     if not policy.dry_run:
-        applied_ceph = (
-            ceph_flags
-            if should_set_ceph_flags(args.phase) and topo.ceph_enabled
-            else []
-        )
         if args.hosts:
-            _log_revert_summary(topo, args, applied_ceph)
+            _log_revert_summary(topo, args, ceph_flags, osd_noout_ids=osd_noout_ids)
         else:
-            _log_startup_checklist(topo, applied_ceph)
+            _log_startup_checklist(topo, ceph_flags, osd_noout_ids=osd_noout_ids)
 
     # Power off orchestrator only on full runs or when explicitly targeted.
     poweroff_self = do_poweroff and (not args.hosts or topo.orchestrator in args.hosts)

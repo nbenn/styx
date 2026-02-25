@@ -118,6 +118,20 @@ class FakeOperations:
             self.ceph_log.append(f'CEPH_FLAGS {" ".join(flags)}')
             self.sequence_log.append((next(self._seq), f'CEPH_FLAGS {" ".join(flags)}'))
 
+    def get_osds_for_hosts(self, hosts):
+        # Fixed mapping for tests: pve1 → [0,1], pve2 → [2,5], pve3 → [3,4]
+        osd_map = {'pve1': ['0', '1'], 'pve2': ['2', '5'], 'pve3': ['3', '4']}
+        osd_ids = []
+        for h in hosts:
+            osd_ids.extend(osd_map.get(h, []))
+        return osd_ids
+
+    def set_osd_noout(self, osd_ids):
+        entry = f'OSD_NOOUT {" ".join(osd_ids)}'
+        with self._lock:
+            self.ceph_log.append(entry)
+            self.sequence_log.append((next(self._seq), entry))
+
     def dispatch_local_shutdown(self, host, workloads, timeout_vm,
                                 poweroff_delay=None, dry_run=False):
         vmids = [vmid for _, vmid in workloads]

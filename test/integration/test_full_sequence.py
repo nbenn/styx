@@ -185,7 +185,7 @@ class TestMainPhaseControl(unittest.TestCase):
         kill_all_fake_vms(self._tmp)
         os.unlink(self._conf.name)
 
-    def _run(self, phase, ceph=False):
+    def _run(self, phase, ceph=False, hosts=None):
         topo = _default_topo(self._tmp, ceph=ceph)
         ops  = FakeOperations(self._tmp, _VM_HOST)
 
@@ -195,11 +195,15 @@ class TestMainPhaseControl(unittest.TestCase):
         def fake_ops_factory(t, c):
             return ops
 
+        argv = ['--phase', str(phase), '--config', self._conf.name]
+        if hosts:
+            argv += ['--hosts'] + hosts
+
         os.environ['LOG_FILE'] = os.path.join(self._tmp, 'styx.log')
         os.environ['STYX_POLL_INTERVAL'] = '1'
         try:
             main(
-                ['--phase', str(phase), '--config', self._conf.name],
+                argv,
                 _discover_fn=fake_discover,
                 _ops_factory=fake_ops_factory,
                 _preflight_fn=lambda t, c, p: None,
@@ -287,6 +291,26 @@ class TestMainPhaseControl(unittest.TestCase):
         self.assertTrue(len(ceph_seqs) > 0)
         self.assertTrue(len(dispatch_seqs) > 0)
         self.assertGreater(min(dispatch_seqs), max(ceph_seqs))
+
+    def test_partial_run_uses_per_osd_noout(self):
+        """--hosts with ceph should use per-OSD noout, not global flags."""
+        ops = self._run(3, ceph=True, hosts=['pve2'])
+        osd_entries = [e for e in ops.ceph_log if e.startswith('OSD_NOOUT')]
+        flag_entries = [e for e in ops.ceph_log if e.startswith('CEPH_FLAGS')]
+        self.assertTrue(len(osd_entries) > 0,
+                        'Expected OSD_NOOUT entries in ceph_log')
+        self.assertEqual(flag_entries, [],
+                         'Expected no CEPH_FLAGS entries for partial run')
+
+    def test_full_run_uses_global_ceph_flags(self):
+        """Full run (no --hosts) with ceph should use global flags, not per-OSD."""
+        ops = self._run(3, ceph=True)
+        osd_entries = [e for e in ops.ceph_log if e.startswith('OSD_NOOUT')]
+        flag_entries = [e for e in ops.ceph_log if e.startswith('CEPH_FLAGS')]
+        self.assertTrue(len(flag_entries) > 0,
+                        'Expected CEPH_FLAGS entries in ceph_log')
+        self.assertEqual(osd_entries, [],
+                         'Expected no OSD_NOOUT entries for full run')
 
     def test_local_shutdown_dispatched_per_host(self):
         """Each host should get exactly one LOCAL_SHUTDOWN dispatch."""

@@ -4,7 +4,7 @@ import os
 import tempfile
 import unittest
 
-from styx.config import load_config, DEFAULT_CEPH_FLAGS, DEFAULT_CEPH_FLAGS_PARTIAL
+from styx.config import load_config, DEFAULT_CEPH_FLAGS
 
 
 def _write(content):
@@ -21,19 +21,10 @@ class TestDefaults(unittest.TestCase):
         self.assertEqual(cfg.timeout_drain, 120)
         self.assertEqual(cfg.timeout_vm, 120)
         self.assertEqual(cfg.ceph_flags, DEFAULT_CEPH_FLAGS)
-        self.assertEqual(cfg.ceph_flags_partial, DEFAULT_CEPH_FLAGS_PARTIAL)
 
     def test_noup_not_in_default_flags(self):
         cfg = load_config('/nonexistent/path')
         self.assertNotIn('noup', cfg.ceph_flags)
-
-    def test_partial_flags_default_is_noout_only(self):
-        cfg = load_config('/nonexistent/path')
-        self.assertEqual(cfg.ceph_flags_partial, ['noout'])
-
-    def test_partial_flags_nodown_not_in_default(self):
-        cfg = load_config('/nonexistent/path')
-        self.assertNotIn('nodown', cfg.ceph_flags_partial)
 
 
 class TestHosts(unittest.TestCase):
@@ -93,22 +84,6 @@ class TestCeph(unittest.TestCase):
             cfg = load_config(p)
             self.assertTrue(cfg.ceph_enabled)
             self.assertEqual(cfg.ceph_flags, ['noout', 'norebalance'])
-        finally:
-            os.unlink(p)
-
-    def test_partial_flags_parsed(self):
-        p = _write('[ceph]\npartial_flags = noout, norebalance\n')
-        try:
-            self.assertEqual(load_config(p).ceph_flags_partial, ['noout', 'norebalance'])
-        finally:
-            os.unlink(p)
-
-    def test_partial_flags_independent_of_full_flags(self):
-        p = _write('[ceph]\nflags = noout, nodown\npartial_flags = noout\n')
-        try:
-            cfg = load_config(p)
-            self.assertEqual(cfg.ceph_flags, ['noout', 'nodown'])
-            self.assertEqual(cfg.ceph_flags_partial, ['noout'])
         finally:
             os.unlink(p)
 

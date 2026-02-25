@@ -5,7 +5,8 @@ import unittest
 from unittest.mock import patch
 
 from styx.wrappers import (
-    _parse_ha_status, _parse_running_vmids, _styx_cmd, _local_pyz,
+    _parse_ha_status, _parse_running_vmids, _parse_osd_tree,
+    _styx_cmd, _local_pyz,
     _VM_LOG, Operations,
 )
 
@@ -116,6 +117,41 @@ class TestParseRunningVmids(unittest.TestCase):
     def test_whitespace_only_lines_excluded(self):
         output = '101\n   \n102\n\t\n'
         self.assertEqual(_parse_running_vmids(output), ['101', '102'])
+
+
+# ── _parse_osd_tree ──────────────────────────────────────────────────────────
+
+class TestParseOsdTree(unittest.TestCase):
+
+    def test_empty_nodes_returns_empty(self):
+        self.assertEqual(_parse_osd_tree({'nodes': []}), {})
+
+    def test_typical_tree_two_hosts(self):
+        data = {'nodes': [
+            {'id': -1, 'type': 'root', 'name': 'default', 'children': [-2, -3]},
+            {'id': -2, 'type': 'host', 'name': 'pve1', 'children': [0, 1, 2]},
+            {'id': -3, 'type': 'host', 'name': 'pve2', 'children': [3, 4, 5]},
+            {'id': 0, 'type': 'osd', 'name': 'osd.0'},
+            {'id': 1, 'type': 'osd', 'name': 'osd.1'},
+            {'id': 2, 'type': 'osd', 'name': 'osd.2'},
+            {'id': 3, 'type': 'osd', 'name': 'osd.3'},
+            {'id': 4, 'type': 'osd', 'name': 'osd.4'},
+            {'id': 5, 'type': 'osd', 'name': 'osd.5'},
+        ]}
+        result = _parse_osd_tree(data)
+        self.assertEqual(result, {
+            'pve1': ['0', '1', '2'],
+            'pve2': ['3', '4', '5'],
+        })
+
+    def test_host_with_no_children(self):
+        data = {'nodes': [
+            {'id': -1, 'type': 'host', 'name': 'empty-host', 'children': []},
+        ]}
+        self.assertEqual(_parse_osd_tree(data), {'empty-host': []})
+
+    def test_missing_nodes_key(self):
+        self.assertEqual(_parse_osd_tree({}), {})
 
 
 # ── _styx_cmd ────────────────────────────────────────────────────────────────

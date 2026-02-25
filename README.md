@@ -134,8 +134,10 @@ Choose a host with no critical services for the partial test (avoid the sole con
 
 ```
 --- Partial run complete — revert checklist ---
-  Ceph OSD flags set: noout
-    → ceph osd unset noout
+  Per-OSD noout set: osd.2 osd.5 osd.8
+    → ceph osd rm-noout osd.2
+    → ceph osd rm-noout osd.5
+    → ceph osd rm-noout osd.8
   k8s nodes cordoned: k8s-cp-1
     → kubectl uncordon k8s-cp-1
   VM(s) stopped (host NOT powered off): 301 302
@@ -163,10 +165,6 @@ pve3 = 192.168.1.12
 [kubernetes]
 workers = 211, 212, 213
 control_plane = 201, 202, 203
-
-# Override Ceph flags for partial --hosts runs (default: noout only)
-[ceph]
-partial_flags = noout
 
 # Adjust timeouts (seconds)
 [timeouts]

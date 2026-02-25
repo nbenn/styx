@@ -34,8 +34,8 @@ Styx auto-discovers the entire environment at startup. For standard setups, **no
 | K8s worker/CP VMIDs | Priority: (1) `[kubernetes] workers/control_plane` config, (2) API: match node names to VM names via `node-role.kubernetes.io/control-plane` label | `[kubernetes] workers, control_plane` |
 | K8s credentials | `[kubernetes] server` + `token` + optional `ca_cert` (required for API-based discovery) | — |
 | Ceph enabled | `pveceph status` exits 0 | `[ceph] enabled` |
-| Ceph flags | defaults: `noout, norecover, norebalance, nobackfill, nodown` | `[ceph] flags` |
-| Ceph flags (partial runs) | default: `noout` | `[ceph] partial_flags` |
+| Ceph flags (full runs) | defaults: `noout, norecover, norebalance, nobackfill, nodown` | `[ceph] flags` |
+| Ceph noout (partial runs) | per-OSD `noout` on target hosts' OSDs (not configurable) | — |
 | Timeouts | defaults: drain=120, vm=120 | `[timeouts]` |
 
 ### Startup Logic
@@ -119,15 +119,16 @@ control_plane = 201, 202, 203
 [ceph]
 # Override auto-detection (pveceph status)
 enabled = true
-# Override default flags (default: noout, norecover, norebalance, nobackfill, nodown)
+# Override default flags for full-cluster runs
+# (default: noout, norecover, norebalance, nobackfill, nodown)
 # noup is NOT set by default: it prevents OSDs coming back up after restart,
 # which is a post-boot concern. Add it here only if you want to delay OSD start
 # on the next boot (e.g., to allow manual verification before OSDs come online).
 flags = noout, norecover, norebalance, nobackfill, nodown
-# Flags set during partial --hosts runs (default: noout only).
-# nodown and recovery/rebalance/backfill flags are full-cluster-shutdown precautions.
-# noout alone is the standard single-node maintenance flag.
-partial_flags = noout
+# Partial --hosts runs use per-OSD noout (ceph osd add-noout osd.N) scoped to
+# only the target hosts' OSDs. This is not configurable — noout is the only
+# flag that supports per-OSD granularity and is appropriate for single-node
+# maintenance.
 
 [timeouts]
 # All values in seconds
@@ -435,7 +436,7 @@ The script is safe to re-run (e.g., `--phase 1` followed by `--phase 3`):
 | `kubectl drain` | Node already cordoned, no pods | Succeeds (no-op) |
 | `styx-vm-shutdown` | VM already stopped (no PID) | Exits 0 |
 | `ha-manager set --state disabled` | Already disabled | No-op |
-| `ceph osd set noout` | Already set | No-op |
+| `ceph osd set noout` / `ceph osd add-noout osd.N` | Already set | No-op |
 | `ssh root@<ip> poweroff` | Host already off | SSH refused, logged, continues |
 
 ### Runtime Budget
@@ -771,7 +772,7 @@ def test_dry_run_no_side_effects(self):
 | QMP socket communication | Covered by `test_vm_shutdown.py` with a Unix-socket mock server; also test on Proxmox |
 | kubectl drain behavior | `--mode dry-run --phase 1` on real cluster |
 | SSH connectivity | `--mode maintenance` pre-flight checks SSH reachability; `--hosts` partial run exercises real SSH |
-| Ceph OSD flag behavior | Idempotent, safe to test live; `--hosts` partial run uses `noout` only |
+| Ceph OSD flag behavior | Idempotent, safe to test live; `--hosts` partial run sets per-OSD `noout` on target hosts' OSDs only |
 | ha-manager interaction | `--mode dry-run`, verify manually |
 | Actual VM shutdown timing | Tune timeouts based on observation |
 
