@@ -628,8 +628,10 @@ def _log_revert_summary(topo, args, ceph_flags_set, osd_noout_ids=None):
             for cmd in start_cmds:
                 log(f'    → {cmd}')
         else:
-            peers = [h for h in topo.host_ips if h != topo.orchestrator]
-            log(f'  Host(s) powered off: {" ".join(peers)}')
+            hosts_off = [h for h in topo.host_ips if h != topo.orchestrator]
+            if args.hosts and topo.orchestrator in args.hosts:
+                hosts_off.append(topo.orchestrator)
+            log(f'  Host(s) powered off: {" ".join(sorted(hosts_off))}')
             for cmd in start_cmds:
                 log(f'    → power on host(s), then {cmd}  (if not HA-managed)')
 
