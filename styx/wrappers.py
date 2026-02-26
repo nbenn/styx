@@ -244,19 +244,29 @@ class Operations:
 
     def poweroff_host(self, host):
         ip = self._host_ips[host]
+        ssh_base = ['ssh', '-o', 'ConnectTimeout=5', '-o', 'BatchMode=yes',
+                    f'root@{ip}']
+        # Schedule poweroff first so it happens even if log collection
+        # fails or the SSH connection drops.
         try:
-            # Collect vm-shutdown and local-shutdown logs before the host
-            # disappears, then power off.
+            subprocess.run(
+                ssh_base + ['nohup sh -c "sleep 5; poweroff" </dev/null >/dev/null 2>&1 &'],
+                capture_output=True, text=True, timeout=10,
+            )
+        except Exception as e:
+            log(f'WARNING: poweroff {host}: {e}')
+            return
+        # Collect vm-shutdown and local-shutdown logs before the host
+        # goes down (best-effort, 25s budget before the poweroff fires).
+        try:
             r = subprocess.run(
-                ['ssh', '-o', 'ConnectTimeout=5', '-o', 'BatchMode=yes',
-                 f'root@{ip}',
-                 f'cat {_VM_LOG_GLOB} {_LOCAL_SHUTDOWN_LOG} 2>/dev/null; poweroff'],
-                capture_output=True, text=True, timeout=30,
+                ssh_base + [f'cat {_VM_LOG_GLOB} {_LOCAL_SHUTDOWN_LOG} 2>/dev/null'],
+                capture_output=True, text=True, timeout=25,
             )
             if r.stdout.strip():
                 log(f'shutdown log from {host}:\n{r.stdout.rstrip()}')
         except Exception as e:
-            log(f'WARNING: poweroff {host}: {e}')
+            log(f'WARNING: log collection from {host}: {e}')
 
     def poweroff_self(self):
         subprocess.run(['poweroff'])
