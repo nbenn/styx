@@ -31,6 +31,11 @@
 #enabled = true
 #flags = noout, norecover, norebalance, nobackfill, nodown, noup
 
+# Override log file path (default: /var/log/styx.log).
+# Can also be overridden via LOG_FILE env var (takes precedence).
+#[logging]
+#file = /var/log/styx.log
+
 # Override default timeouts (all values in seconds).
 #[timeouts]
 #drain = 120   # Max time for kubectl drain per node

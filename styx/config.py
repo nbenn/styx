@@ -24,6 +24,7 @@ class StyxConfig:
     ceph_flags: list = field(default_factory=lambda: list(DEFAULT_CEPH_FLAGS))
     timeout_drain: int = 120
     timeout_vm: int = 120
+    log_file: str = '/var/log/styx.log'
 
 
 def _split_list(raw):
@@ -64,6 +65,11 @@ def load_config(path):
         raw = parser.get('ceph', 'flags', fallback='').strip()
         if raw:
             cfg.ceph_flags = _split_list(raw)
+    if parser.has_section('logging'):
+        raw = parser.get('logging', 'file', fallback='').strip()
+        if raw:
+            cfg.log_file = raw
+
     if parser.has_section('timeouts'):
         raw = parser.get('timeouts', 'drain', fallback='').strip()
         if raw.isdigit():

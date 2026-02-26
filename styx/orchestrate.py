@@ -670,16 +670,8 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None, _preflight_fn=None)
                    help='Shut down VMs but do not power off any host')
     args = p.parse_args(argv)
 
-    setup_log_file(os.environ.get('LOG_FILE', '/var/log/styx.log'))
-
-    if args.mode == 'dry-run':
-        policy = DryRunPolicy()
-    elif args.mode == 'maintenance':
-        policy = MaintenancePolicy()
-    else:
-        policy = Policy()
-
-    # ── Config path resolution ────────────────────────────────────────────
+    # ── Config + logging ──────────────────────────────────────────────────
+    # Load config first so the log file path is available before any logging.
     config_explicit = args.config is not None
     if config_explicit:
         config_path = args.config
@@ -690,12 +682,23 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None, _preflight_fn=None)
         else:
             config_path = '/etc/styx/styx.conf'
 
+    config = load_config(config_path)
+
+    # Log file precedence: LOG_FILE env var > config [logging] file > default.
+    log_file = os.environ.get('LOG_FILE', '') or config.log_file
+    setup_log_file(log_file)
+
+    if args.mode == 'dry-run':
+        policy = DryRunPolicy()
+    elif args.mode == 'maintenance':
+        policy = MaintenancePolicy()
+    else:
+        policy = Policy()
+
     if config_explicit and not os.path.isfile(config_path):
         policy.on_preflight_failure(f'Config file not found: {config_path}')
     elif not config_explicit and not os.path.isfile(config_path):
         log(f'No config file at {config_path} — using defaults')
-
-    config = load_config(config_path)
 
     log('=' * 40)
     log('styx run started')
