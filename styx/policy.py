@@ -95,7 +95,9 @@ class MaintenancePolicy(Policy):
                 try:
                     choice = self._input('  [s]kip  [a]bort: ').strip().lower()
                 except EOFError:
-                    choice = 's'
+                    log('FATAL: stdin closed — aborting (maintenance mode)')
+                    import sys
+                    sys.exit(1)
                 if choice in ('s', 'skip', ''):
                     return
                 if choice in ('a', 'abort'):
@@ -108,7 +110,9 @@ class MaintenancePolicy(Policy):
             try:
                 choice = self._input('  [y]es  [a]bort: ').strip().lower()
             except EOFError:
-                choice = 'y'
+                log('FATAL: stdin closed — aborting (maintenance mode)')
+                import sys
+                sys.exit(1)
             if choice in ('y', 'yes', ''):
                 return
             if choice in ('a', 'abort', 'n', 'no'):

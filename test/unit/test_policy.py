@@ -86,10 +86,12 @@ class TestMaintenancePolicy(unittest.TestCase):
     def test_on_warning_reprompts_on_unknown_input(self):
         self._policy(['?', 'skip']).on_warning('test warning')
 
-    def test_on_warning_eoferror_skips(self):
+    def test_on_warning_eoferror_aborts(self):
         def raise_eof(_):
             raise EOFError
-        MaintenancePolicy(_input=raise_eof).on_warning('test warning')
+        with self.assertRaises(SystemExit) as cm:
+            MaintenancePolicy(_input=raise_eof).on_warning('test warning')
+        self.assertEqual(cm.exception.code, 1)
 
     # ── phase_gate ────────────────────────────────────────────────────────────
 
@@ -115,10 +117,12 @@ class TestMaintenancePolicy(unittest.TestCase):
     def test_phase_gate_reprompts_on_unknown_input(self):
         self._policy(['maybe', 'y']).phase_gate('summary')
 
-    def test_phase_gate_eoferror_continues(self):
+    def test_phase_gate_eoferror_aborts(self):
         def raise_eof(_):
             raise EOFError
-        MaintenancePolicy(_input=raise_eof).phase_gate('summary')
+        with self.assertRaises(SystemExit) as cm:
+            MaintenancePolicy(_input=raise_eof).phase_gate('summary')
+        self.assertEqual(cm.exception.code, 1)
 
     # ── on_preflight_failure ─────────────────────────────────────────────────
 
