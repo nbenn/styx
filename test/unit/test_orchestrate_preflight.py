@@ -1,10 +1,13 @@
 """Unit tests for orchestrate.preflight()."""
 
 import json
+import pathlib
 import subprocess
 import sys
 import unittest
 from unittest import mock
+
+_FIXTURES = pathlib.Path(__file__).resolve().parent.parent / 'fixtures'
 
 from styx.config import StyxConfig
 from styx.discover import ClusterTopology
@@ -721,6 +724,56 @@ class TestPreflightMigration(unittest.TestCase):
         spy = _SpyPolicy()
         with mock.patch('styx.orchestrate.subprocess.run', side_effect=_subprocess_default):
             preflight(topo, _cfg(), spy)
+        self.assertEqual(spy.preflight_failure_calls, [])
+
+
+# ── Fixture-based parsing ─────────────────────────────────────────────────────
+
+class TestPreflightFixtures(unittest.TestCase):
+    """Validate preflight parsing against real-world JSON fixtures."""
+
+    def _run_with_fixtures(self, ceph_fixture=None, pvesh_fixture=None,
+                           ceph_enabled=False):
+        """Run preflight with fixture files as subprocess output."""
+        ceph_stdout = (_FIXTURES / 'ceph' / ceph_fixture).read_text() if ceph_fixture else ''
+        pvesh_stdout = (_FIXTURES / 'pvesh' / pvesh_fixture).read_text() if pvesh_fixture else ''
+
+        def _run(cmd, **kwargs):
+            r = mock.MagicMock(stdout='', stderr='', returncode=0)
+            if cmd[0] == 'ceph' and ceph_fixture:
+                r.stdout = ceph_stdout
+            elif cmd[0] == 'pvesh' and pvesh_fixture:
+                r.stdout = pvesh_stdout
+            return r
+
+        spy = _SpyPolicy()
+        with mock.patch('styx.orchestrate.subprocess.run', side_effect=_run):
+            preflight(_topo(ceph_enabled=ceph_enabled), _cfg(), spy)
+        return spy
+
+    def test_real_ceph_health_ok(self):
+        spy = self._run_with_fixtures(
+            ceph_fixture='health_ok.json',
+            pvesh_fixture='cluster_status.json',
+            ceph_enabled=True)
+        self.assertEqual(spy.preflight_failure_calls, [])
+
+    def test_real_ceph_health_warn(self):
+        spy = self._run_with_fixtures(
+            ceph_fixture='health_warn.json',
+            pvesh_fixture='cluster_status.json',
+            ceph_enabled=True)
+        self.assertEqual(len(spy.preflight_failure_calls), 1)
+        self.assertIn('Ceph not healthy', spy.preflight_failure_calls[0])
+
+    def test_real_pvesh_cluster_status_quorate(self):
+        spy = self._run_with_fixtures(
+            pvesh_fixture='cluster_status.json')
+        self.assertEqual(spy.preflight_failure_calls, [])
+
+    def test_real_pvesh_cluster_status_offline_node(self):
+        spy = self._run_with_fixtures(
+            pvesh_fixture='cluster_status_offline_node.json')
         self.assertEqual(spy.preflight_failure_calls, [])
 
 

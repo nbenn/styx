@@ -1,0 +1,1 @@
+{"status":"HEALTH_WARN","checks":{"TOO_FEW_PGS":{"severity":"HEALTH_WARN","summary":{"message":"too few PGs per OSD (8 < min 30)","count":8}}},"mutes":[]}
