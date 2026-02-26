@@ -195,7 +195,8 @@ class TestMainPhaseControl(unittest.TestCase):
         def fake_ops_factory(t, c):
             return ops
 
-        argv = ['--phase', str(phase), '--config', self._conf.name]
+        argv = ['--phase', str(phase), '--mode', 'emergency',
+                '--config', self._conf.name]
         if hosts:
             argv += ['--hosts'] + hosts
 
@@ -358,7 +359,8 @@ class TestIdempotency(unittest.TestCase):
         try:
             for phase in (1, 3):
                 main(
-                    ['--phase', str(phase), '--config', conf.name],
+                    ['--phase', str(phase), '--mode', 'emergency',
+                     '--config', conf.name],
                     _discover_fn=lambda c: _default_topo(self._tmp),
                     _ops_factory=lambda t, c: ops,
                     _preflight_fn=lambda t, c, p: None,

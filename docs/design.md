@@ -279,7 +279,7 @@ A dedicated ServiceAccount with minimal permissions for drain operations. A long
 styx.pyz orchestrate [--mode <mode>] [--phase <1|2|3>] [--config <path>]
                      [--hosts HOST [HOST ...]] [--skip-poweroff]
 
-  --mode <mode>           dry-run | emergency | maintenance  (default: emergency)
+  --mode <mode>           dry-run | emergency | maintenance  (default: dry-run)
   --phase <1|2|3>         Execute up to and including this phase (default: 3)
   --config <path>         Config file path (default: next to styx.pyz, else /etc/styx/styx.conf)
   --hosts HOST [HOST ...]  Restrict to these hosts only (orchestrator always included)

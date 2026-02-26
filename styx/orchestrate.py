@@ -665,7 +665,7 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None, _preflight_fn=None)
     p.add_argument('--phase',  type=int, choices=[1, 2, 3], default=3)
     p.add_argument('--config', default=None)
     p.add_argument('--mode',   choices=['dry-run', 'emergency', 'maintenance'],
-                   default='emergency')
+                   default='dry-run')
     p.add_argument('--hosts', metavar='HOST', nargs='+',
                    help='Restrict to these hosts only (orchestrator always included)')
     p.add_argument('--skip-poweroff', action='store_true',

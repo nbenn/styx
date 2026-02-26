@@ -13,10 +13,8 @@
 #   -h, --help             Show this help message
 #   STYX_ARGS              All other flags are forwarded to styx orchestrate
 #
-# Default remote command: orchestrate --mode emergency
-#
 # Examples:
-#   trigger.sh --controllers 10.0.0.1 10.0.0.2
+#   trigger.sh --controllers 10.0.0.1 10.0.0.2 --mode emergency
 #   trigger.sh --controllers 10.0.0.1 --mode dry-run
 #   trigger.sh --controllers 10.0.0.1 --phase 2 --mode emergency
 #   trigger.sh --controllers 10.0.0.1 --config /etc/styx/custom.conf
@@ -57,11 +55,7 @@ if [[ ${#CONTROLLERS[@]} -eq 0 ]]; then
 fi
 
 if [[ -z "$styx_cmd" ]]; then
-    if [[ ${#STYX_ARGS[@]} -gt 0 ]]; then
-        styx_cmd="orchestrate ${STYX_ARGS[*]}"
-    else
-        styx_cmd="orchestrate --mode emergency"
-    fi
+    styx_cmd="orchestrate ${STYX_ARGS[*]}"
 fi
 
 for node in "${CONTROLLERS[@]}"; do

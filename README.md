@@ -111,7 +111,9 @@ styx.pyz orchestrate --mode maintenance --hosts pve3
 
 All three modes run preflight checks — SSH reachability, styx version on peers, Kubernetes API + node readiness, Ceph health, Proxmox quorum, and a worst-case runtime budget. The difference is what happens when a check fails:
 
-**Emergency** (default) is designed for unattended UPS-triggered shutdowns: preflight failures are logged as warnings and execution continues. Every step during the shutdown sequence also logs a warning on failure and moves on, with no human in the loop.
+**Dry-run** (default) logs every action styx would take without executing anything. Preflight failures are fatal. Use this to verify connectivity and inspect the shutdown plan before a real run.
+
+**Emergency** is designed for unattended UPS-triggered shutdowns: preflight failures are logged as warnings and execution continues. Every step during the shutdown sequence also logs a warning on failure and moves on, with no human in the loop. Must be requested explicitly with `--mode emergency`.
 
 **Maintenance** is for planned shutdowns. Preflight failures are fatal — styx aborts before touching anything. If preflight passes, it then prompts for confirmation before proceeding. Any warning during execution (drain timeout, stale VolumeAttachment, etc.) pauses and asks whether to skip or abort. A second confirmation gate sits before the final host powerdown.
 
@@ -202,21 +204,21 @@ The `restrict` keyword disables all SSH features (pty, forwarding, tunnels) by d
 **3. Install `trigger.sh`** on the UPS monitoring host and configure your UPS software to call it:
 
 ```bash
-cp scripts/trigger.sh /usr/local/bin/styx-trigger
-chmod +x /usr/local/bin/styx-trigger
+cp scripts/trigger.sh /usr/local/bin/trigger
+chmod +x /usr/local/bin/trigger
 ```
 
 ### Usage
 
 ```bash
 # Trigger emergency shutdown, trying each node until one responds
-styx-trigger 192.168.1.10 192.168.1.11 192.168.1.12
+trigger --mode emergency 192.168.1.10 192.168.1.11 192.168.1.12
 
 # Dry-run (verify connectivity and plan without executing)
-styx-trigger --mode dry-run 192.168.1.10 192.168.1.11 192.168.1.12
+trigger 192.168.1.10 192.168.1.11 192.168.1.12
 
 # Custom SSH key path
-styx-trigger --key /path/to/key --mode emergency 192.168.1.10 192.168.1.11
+trigger --key /path/to/key --mode emergency 192.168.1.10 192.168.1.11
 ```
 
 The trigger script tries each node in order and stops at the first one that responds. Any node can act as orchestrator, so if the primary is down, the next reachable node takes over. If a connection drops mid-run and the script falls through to another node, both runs can proceed safely — all styx operations are idempotent.
@@ -226,15 +228,15 @@ The trigger script tries each node in order and stops at the first one that resp
 In `upsmon.conf` on the UPS monitoring host:
 
 ```
-SHUTDOWNCMD "/usr/local/bin/styx-trigger 192.168.1.10 192.168.1.11 192.168.1.12"
+SHUTDOWNCMD "/usr/local/bin/trigger --mode emergency 192.168.1.10 192.168.1.11 192.168.1.12"
 ```
 
 ### Other triggers
 
 Styx can also be triggered directly on any cluster node:
 
-- **Manual**: `styx.pyz orchestrate` on any node
-- **Cron/systemd**: call from a shutdown script
+- **Manual**: `styx.pyz orchestrate` on any node (dry-run by default; add `--mode maintenance` or `--mode emergency`)
+- **Cron/systemd**: `styx.pyz orchestrate --mode emergency` from a shutdown script
 
 ## Logging
 
