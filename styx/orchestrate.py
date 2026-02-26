@@ -379,19 +379,22 @@ def _disable_ha(topo, ops, policy, scope):
 # ── per-VM actions ────────────────────────────────────────────────────────────
 
 def _drain_only(vmid, node, host, config, ops, policy):
+    """Drain a single k8s node. Returns a list of warning strings (empty = OK)."""
     log(f'Draining: {node} (VM {vmid} on {host})')
+    warnings = []
     ok = policy.execute(f'drain {node}', ops.drain_node, node, config.timeout_drain)
     if ok is None:        # dry-run
-        return
+        return warnings
     if not ok:
-        policy.on_warning(f'drain timed out or failed for {node}')
+        warnings.append(f'drain timed out or failed for {node}')
     else:
         log(f'Drained: {node}')
         stale = ops.list_volume_attachments_for_node(node)
         if stale:
-            policy.on_warning(
+            warnings.append(
                 f'stale VolumeAttachments after drain of {node}: {", ".join(stale)}'
             )
+    return warnings
 
 
 # ── coordinated phase helpers ────────────────────────────────────────────────
@@ -405,6 +408,7 @@ def _drain_all_k8s(topo, config, ops, policy):
 
     cp_set = set(topo.k8s_cp)
 
+    warnings = []
     with concurrent.futures.ThreadPoolExecutor() as ex:
         futs = {}
         for vmid in topo.k8s_workers + topo.k8s_cp:
@@ -415,12 +419,15 @@ def _drain_all_k8s(topo, config, ops, policy):
             )] = vmid
 
         for fut in concurrent.futures.as_completed(futs):
+            vmid = futs[fut]
             try:
-                fut.result()
+                warnings.extend(fut.result())
             except Exception as e:
-                vmid = futs[fut]
                 label = 'cp' if vmid in cp_set else 'worker'
-                policy.on_warning(f'{label} {vmid}: {e}')
+                warnings.append(f'{label} {vmid}: {e}')
+
+    if warnings:
+        policy.on_warning('drain issues:\n' + '\n'.join(f'  - {w}' for w in warnings))
 
     log('All drains complete')
 
@@ -646,7 +653,13 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None, _preflight_fn=None)
     _preflight_fn(topo, config, policy)      — injectable for testing
     """
     import argparse
+    import signal
     import sys as _sys
+
+    # Ignore SIGHUP so an SSH disconnect does not kill the orchestrator
+    # mid-operation.  In maintenance mode the next interactive prompt will
+    # detect the closed stdin (EOFError) and abort cleanly.
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
 
     p = argparse.ArgumentParser(description='styx — graceful cluster shutdown')
     p.add_argument('--phase',  type=int, choices=[1, 2, 3], default=3)
