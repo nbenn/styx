@@ -1,5 +1,6 @@
 """Unit tests for orchestrate.preflight()."""
 
+import json
 import subprocess
 import sys
 import unittest
@@ -42,17 +43,18 @@ def _ceph_calls(mock_run):
     return [c for c in mock_run.call_args_list if c.args and c.args[0][0] == 'ceph']
 
 
-def _pvecm_calls(mock_run):
-    return [c for c in mock_run.call_args_list if c.args and c.args[0][0] == 'pvecm']
+def _pvesh_cluster_status(quorate=1):
+    """Return a minimal /cluster/status JSON response."""
+    return [{'type': 'cluster', 'quorate': quorate, 'name': 'proxmox', 'nodes': 3}]
 
 
 def _subprocess_default(cmd, **kwargs):
-    """Default side_effect: SSH OK, ceph HEALTH_OK, pvecm quorate."""
+    """Default side_effect: SSH OK, ceph HEALTH_OK, pvesh quorate."""
     r = mock.MagicMock(stdout='', stderr='', returncode=0)
     if cmd[0] == 'ceph':
         r.stdout = 'HEALTH_OK'
-    elif cmd[0] == 'pvecm':
-        r.stdout = 'Quorate: Yes\n'
+    elif cmd[0] == 'pvesh':
+        r.stdout = json.dumps(_pvesh_cluster_status())
     return r
 
 
@@ -266,8 +268,8 @@ class TestPreflightCeph(unittest.TestCase):
             r = mock.MagicMock(stdout='', stderr='', returncode=0)
             if cmd[0] == 'ceph':
                 r.stdout = 'HEALTH_WARN too few PGs per OSD'
-            elif cmd[0] == 'pvecm':
-                r.stdout = 'Quorate: Yes\n'
+            elif cmd[0] == 'pvesh':
+                r.stdout = json.dumps(_pvesh_cluster_status())
             return r
 
         with mock.patch('styx.orchestrate.subprocess.run', side_effect=_run):
@@ -280,8 +282,8 @@ class TestPreflightCeph(unittest.TestCase):
             r = mock.MagicMock(stdout='', stderr='', returncode=0)
             if cmd[0] == 'ceph':
                 r.stdout = 'HEALTH_WARN too few PGs per OSD'
-            elif cmd[0] == 'pvecm':
-                r.stdout = 'Quorate: Yes\n'
+            elif cmd[0] == 'pvesh':
+                r.stdout = json.dumps(_pvesh_cluster_status())
             return r
 
         with mock.patch('styx.orchestrate.subprocess.run', side_effect=_run):
@@ -304,16 +306,16 @@ class TestPreflightCeph(unittest.TestCase):
 class TestPreflightQuorum(unittest.TestCase):
 
     def test_quorum_ok_no_failure(self):
-        """pvecm status with Quorate: Yes → no failure."""
+        """pvesh /cluster/status with quorate=1 → no failure."""
         with mock.patch('styx.orchestrate.subprocess.run', side_effect=_subprocess_default):
             preflight(_topo(), _cfg(), Policy())   # must not raise
 
     def test_quorum_lost_fatal_in_dryrun(self):
-        """Quorate: No in dry-run mode is fatal."""
+        """quorate=0 in dry-run mode is fatal."""
         def _run(cmd, **kwargs):
             r = mock.MagicMock(stdout='', stderr='', returncode=0)
-            if cmd[0] == 'pvecm':
-                r.stdout = 'Quorate: No\n'
+            if cmd[0] == 'pvesh':
+                r.stdout = json.dumps(_pvesh_cluster_status(quorate=0))
             return r
 
         with mock.patch('styx.orchestrate.subprocess.run', side_effect=_run):
@@ -321,21 +323,21 @@ class TestPreflightQuorum(unittest.TestCase):
                 preflight(_topo(), _cfg(), DryRunPolicy())
 
     def test_quorum_lost_warning_in_emergency(self):
-        """Quorate: No in emergency mode warns and continues."""
+        """quorate=0 in emergency mode warns and continues."""
         def _run(cmd, **kwargs):
             r = mock.MagicMock(stdout='', stderr='', returncode=0)
-            if cmd[0] == 'pvecm':
-                r.stdout = 'Quorate: No\n'
+            if cmd[0] == 'pvesh':
+                r.stdout = json.dumps(_pvesh_cluster_status(quorate=0))
             return r
 
         with mock.patch('styx.orchestrate.subprocess.run', side_effect=_run):
             preflight(_topo(), _cfg(), Policy())   # must not raise
 
     def test_quorum_check_unavailable_fatal_in_dryrun(self):
-        """pvecm command failure in dry-run mode is fatal."""
+        """pvesh /cluster/status failure in dry-run mode is fatal."""
         def _run(cmd, **kwargs):
-            if cmd[0] == 'pvecm':
-                raise FileNotFoundError('pvecm not found')
+            if cmd[0] == 'pvesh':
+                raise FileNotFoundError('pvesh not found')
             return _subprocess_default(cmd, **kwargs)
 
         with mock.patch('styx.orchestrate.subprocess.run', side_effect=_run):
@@ -399,8 +401,8 @@ def _ssh_side_effect(reachable_ips=None, version_stdout='0.1.0',
 
     def handler(cmd, **kwargs):
         r = mock.MagicMock(stdout='', stderr='', returncode=0)
-        if cmd[0] == 'pvecm':
-            r.stdout = 'Quorate: Yes\n'
+        if cmd[0] == 'pvesh':
+            r.stdout = json.dumps(_pvesh_cluster_status())
             return r
         if cmd[0] != 'ssh':
             return r
@@ -595,8 +597,8 @@ class TestPreflightEmergencyNeverAborts(unittest.TestCase):
             r = mock.MagicMock(stdout='', stderr='', returncode=0)
             if cmd[0] == 'ceph':
                 r.stdout = 'HEALTH_WARN too few PGs per OSD'
-            elif cmd[0] == 'pvecm':
-                r.stdout = 'Quorate: Yes\n'
+            elif cmd[0] == 'pvesh':
+                r.stdout = json.dumps(_pvesh_cluster_status())
             return r
 
         spy = _SpyPolicy()
@@ -620,8 +622,8 @@ class TestPreflightEmergencyNeverAborts(unittest.TestCase):
     def test_quorum_lost_detected(self):
         def _run(cmd, **kwargs):
             r = mock.MagicMock(stdout='', stderr='', returncode=0)
-            if cmd[0] == 'pvecm':
-                r.stdout = 'Quorate: No\n'
+            if cmd[0] == 'pvesh':
+                r.stdout = json.dumps(_pvesh_cluster_status(quorate=0))
             return r
 
         spy = _SpyPolicy()
@@ -632,8 +634,8 @@ class TestPreflightEmergencyNeverAborts(unittest.TestCase):
 
     def test_quorum_unavailable_detected(self):
         def _run(cmd, **kwargs):
-            if cmd[0] == 'pvecm':
-                raise FileNotFoundError('pvecm not found')
+            if cmd[0] == 'pvesh':
+                raise FileNotFoundError('pvesh not found')
             return _subprocess_default(cmd, **kwargs)
 
         spy = _SpyPolicy()
@@ -660,8 +662,8 @@ class TestPreflightEmergencyNeverAborts(unittest.TestCase):
                 raise subprocess.CalledProcessError(255, 'ssh')
             if cmd[0] == 'ceph':
                 raise FileNotFoundError('ceph not found')
-            if cmd[0] == 'pvecm':
-                raise FileNotFoundError('pvecm not found')
+            if cmd[0] == 'pvesh':
+                raise FileNotFoundError('pvesh not found')
             return mock.MagicMock(stdout='', stderr='', returncode=0)
 
         topo = _topo(

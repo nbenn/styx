@@ -299,24 +299,20 @@ def preflight(topo, config, policy):
 
     # ── Proxmox quorum ────────────────────────────────────────────────────
     try:
-        r = subprocess.run(
-            ['pvecm', 'status'], capture_output=True, text=True, timeout=10,
+        cluster_status = _pvesh('/cluster/status')
+        cluster_entry = next(
+            (e for e in cluster_status if e.get('type') == 'cluster'), None,
         )
-        quorate = None
-        for line in r.stdout.splitlines():
-            if line.strip().startswith('Quorate:'):
-                quorate = line.split(':', 1)[1].strip()
-                break
-        if quorate is None:
-            log('Quorum: could not parse pvecm status')
-            failures.append('Quorum: could not parse pvecm status')
-        elif quorate.lower().startswith('yes'):
+        if cluster_entry is None:
+            log('Quorum: no cluster entry in /cluster/status')
+            failures.append('Quorum: no cluster entry in /cluster/status')
+        elif cluster_entry.get('quorate'):
             log('Quorum: OK')
         else:
-            log(f'Quorum: NOT quorate ({quorate})')
-            failures.append(f'Quorum lost: {quorate}')
+            log('Quorum: NOT quorate')
+            failures.append('Quorum lost')
     except Exception as e:
-        log(f'Quorum: pvecm unavailable ({e})')
+        log(f'Quorum: pvesh /cluster/status failed ({e})')
         failures.append(f'Quorum check failed: {e}')
 
     # ── Report ────────────────────────────────────────────────────────────

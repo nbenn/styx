@@ -307,7 +307,7 @@ Checks performed:
 - `styx --version` on each reachable peer (only when running as zipapp) — version mismatch or missing install
 - Kubernetes API status + node readiness (NotReady nodes) + per-node drainable pod count
 - Ceph health (`ceph health`) — anything other than `HEALTH_OK`
-- Proxmox quorum (`pvecm status`) — catches quorum loss early
+- Proxmox quorum (`pvesh /cluster/status`) — catches quorum loss early
 
 Two phase gates prompt for confirmation:
 1. After discovery + pre-flight: "N hosts, M VMs … proceed with shutdown?"
@@ -735,7 +735,7 @@ def test_maintenance_on_warning_abort_exits_1(self):
 
 ### Integration Tests
 
-Full orchestration with `FakeOperations` — no real SSH, QMP, or kubectl. VMs simulated as `sleep` processes with PID files in a temp directory. `main()` receives injected `_discover_fn`, `_ops_factory`, and `_preflight_fn` (no-op lambda to avoid real SSH/pvecm calls).
+Full orchestration with `FakeOperations` — no real SSH, QMP, or kubectl. VMs simulated as `sleep` processes with PID files in a temp directory. `main()` receives injected `_discover_fn`, `_ops_factory`, and `_preflight_fn` (no-op lambda to avoid real SSH/pvesh calls).
 
 ```python
 # test/integration/test_full_sequence.py
