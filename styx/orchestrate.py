@@ -287,11 +287,13 @@ def preflight(topo, config, policy):
     if topo.ceph_enabled:
         try:
             r = subprocess.run(
-                ['ceph', 'health'], capture_output=True, text=True, timeout=10,
+                ['ceph', 'health', '-f', 'json'],
+                capture_output=True, text=True, timeout=10,
             )
-            status = r.stdout.strip() or r.stderr.strip()
+            health = json.loads(r.stdout)
+            status = health.get('status', 'UNKNOWN')
             log(f'Ceph: {status}')
-            if not status.startswith('HEALTH_OK'):
+            if status != 'HEALTH_OK':
                 failures.append(f'Ceph not healthy: {status}')
         except Exception as e:
             log(f'Ceph: unavailable ({e})')

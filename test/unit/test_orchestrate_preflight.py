@@ -48,11 +48,16 @@ def _pvesh_cluster_status(quorate=1):
     return [{'type': 'cluster', 'quorate': quorate, 'name': 'proxmox', 'nodes': 3}]
 
 
+def _ceph_health_json(status='HEALTH_OK'):
+    """Return a ceph health JSON response."""
+    return json.dumps({'status': status})
+
+
 def _subprocess_default(cmd, **kwargs):
     """Default side_effect: SSH OK, ceph HEALTH_OK, pvesh quorate."""
     r = mock.MagicMock(stdout='', stderr='', returncode=0)
     if cmd[0] == 'ceph':
-        r.stdout = 'HEALTH_OK'
+        r.stdout = _ceph_health_json()
     elif cmd[0] == 'pvesh':
         r.stdout = json.dumps(_pvesh_cluster_status())
     return r
@@ -267,7 +272,7 @@ class TestPreflightCeph(unittest.TestCase):
         def _run(cmd, **kwargs):
             r = mock.MagicMock(stdout='', stderr='', returncode=0)
             if cmd[0] == 'ceph':
-                r.stdout = 'HEALTH_WARN too few PGs per OSD'
+                r.stdout = _ceph_health_json('HEALTH_WARN')
             elif cmd[0] == 'pvesh':
                 r.stdout = json.dumps(_pvesh_cluster_status())
             return r
@@ -281,7 +286,7 @@ class TestPreflightCeph(unittest.TestCase):
         def _run(cmd, **kwargs):
             r = mock.MagicMock(stdout='', stderr='', returncode=0)
             if cmd[0] == 'ceph':
-                r.stdout = 'HEALTH_WARN too few PGs per OSD'
+                r.stdout = _ceph_health_json('HEALTH_WARN')
             elif cmd[0] == 'pvesh':
                 r.stdout = json.dumps(_pvesh_cluster_status())
             return r
@@ -596,7 +601,7 @@ class TestPreflightEmergencyNeverAborts(unittest.TestCase):
         def _run(cmd, **kwargs):
             r = mock.MagicMock(stdout='', stderr='', returncode=0)
             if cmd[0] == 'ceph':
-                r.stdout = 'HEALTH_WARN too few PGs per OSD'
+                r.stdout = _ceph_health_json('HEALTH_WARN')
             elif cmd[0] == 'pvesh':
                 r.stdout = json.dumps(_pvesh_cluster_status())
             return r
