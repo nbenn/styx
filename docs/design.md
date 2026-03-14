@@ -48,7 +48,7 @@ Styx auto-discovers the entire environment at startup. For standard setups, **no
    - If neither applies → skip k8s entirely (Proxmox-only mode).
    - If API is configured but unreachable → skip k8s (re-run scenario where k8s VMs are already off).
 4. **Ceph**: `pveceph status >/dev/null 2>&1` — exit 0 means Ceph is configured. If `[ceph] enabled` is explicitly set in config, that takes precedence.
-5. **HA**: `ha-manager status` → auto-detect HA-managed resources (phase >= 2 only).
+5. **HA**: `ha-manager status` → auto-detect HA-managed resources (phase >= 2 only). For partial shutdowns (`--hosts`), also queries `/cluster/ha/resources` and `/cluster/ha/groups` to classify VMs as relocatable vs non-relocatable.
 
 All discovery uses `pvesh`/`ha-manager` which require quorum — but discovery runs at startup before any host is powered off, so quorum is guaranteed.
 
@@ -73,6 +73,7 @@ flags = noout, norebalance
 [timeouts]
 drain = 60
 vm = 90
+maintenance_multiplier = 10   # 10× for maintenance/dry-run mode (default)
 ```
 
 When node names don't match VM names:
@@ -134,6 +135,7 @@ flags = noout, norecover, norebalance, nobackfill, nodown
 # All values in seconds
 drain = 120    # Max time for kubectl drain per node (default: 120)
 vm = 120       # Max time for VM graceful shutdown before force-kill (default: 120)
+maintenance_multiplier = 10  # Timeout multiplier for maintenance/dry-run mode (default: 10)
 ```
 
 All sections are optional. SSH must be set up between all Proxmox hosts (root, key-based) regardless of configuration method.
@@ -156,7 +158,7 @@ All sections are optional. SSH must be set up between all Proxmox hosts (root, k
 - **python3** on **all** Proxmox hosts (standard on Proxmox 8+; used for orchestration and VM shutdown)
 - **styx installed** on all nodes via `scripts/install.sh` (installs to `/opt/styx/styx.pyz`)
 - **ceph** CLI on the orchestrator or a Ceph node (if using Ceph)
-- **`shutdown_policy = freeze`** in Proxmox `datacenter.cfg` (cluster-side): prevents HA from attempting to relocate VMs to surviving nodes during the shutdown window. Without this, HA may fight the shutdown sequence.
+- **`shutdown_policy = freeze`** in Proxmox `datacenter.cfg` (cluster-side): only relevant for **full-cluster** shutdowns — prevents HA from attempting to relocate VMs to surviving nodes during the shutdown window. For **partial shutdowns** (`--hosts`), styx manages HA per-VM explicitly (see HA Handling) and this setting has no effect.
 - **kubelet `GracefulNodeShutdown`** (`shutdownGracePeriod` in kubelet config, node-side): ensures the kubelet participates in ACPI shutdown and terminates pods cleanly before the node powers off. This is a node-side prerequisite; styx has no visibility into it and does not configure it.
 
 ### File Layout
@@ -347,7 +349,12 @@ STARTUP:
 
 COORDINATED PHASE (leader, requires quorum/API):
   cordon all k8s:     [kubectl cordon] (instant, prevents rescheduling before HA is disabled)
-  disable HA:         [ha-manager set ... --state disabled]  (k8s scope for phase 1; all for phase 2+)
+  HA handling:        full run:    disable all HA [ha-manager set ... --state disabled]
+                      --hosts run: classify relocatable vs non-relocatable VMs
+                                   disable HA for non-relocatable only
+                                   enable node-maintenance → Proxmox migrates relocatable VMs
+                                   wait for migrations, refresh VM topology
+                      (k8s scope for phase 1; all for phase 2+)
   drain all k8s:      [drain all workers + CP in parallel, no VM shutdown]
 
 PHASE GATE (phase 3): "Drains complete — about to set Ceph flags, dispatch shutdown
@@ -400,13 +407,42 @@ All startup queries (`pvesh`, `ha-manager`, `kubectl`) require quorum / API acce
 
 ### HA Handling
 
-Some VMs may have Proxmox HA enabled. HA must be disabled before shutdown to prevent Proxmox from restarting VMs on surviving hosts.
+Some VMs may have Proxmox HA enabled. HA must be managed before shutdown to prevent Proxmox from fighting the shutdown sequence.
+
+#### Full-cluster shutdown (no `--hosts`)
+
+All HA resources are disabled unconditionally — there are no surviving nodes to migrate to.
 
 - Auto-detected at startup via `ha-manager status`
 - Each HA-managed resource disabled individually: `ha-manager set <sid> --state disabled`
-- Phase 1: scoped to k8s VMIDs only (`ha-manager set vm:<vmid> --state disabled` for each k8s worker/CP)
+- Phase 1: scoped to k8s VMIDs only
 - Phase 2+: all HA-managed resources disabled regardless of VM type
+
+#### Partial shutdown (`--hosts`)
+
+For partial shutdowns, styx classifies each HA-managed VM on the target hosts as **relocatable** or **non-relocatable**, then handles them differently:
+
+**Relocatable** — the VM has somewhere to go:
+- No HA group assigned (can run on any node), OR
+- HA group is not `restricted` (can run on any node), OR
+- Restricted HA group has at least one member node NOT in the shutdown set
+
+**Non-relocatable** — no surviving group members:
+- Restricted HA group whose nodes are ALL in the shutdown set
+
+The partial-shutdown flow:
+
+1. **Disable HA** for non-relocatable VMs (`ha-manager set <sid> --state disabled`) — removes them from CRM so no migration is attempted
+2. **Enable node maintenance** on each target host (`ha-manager crm-command node-maintenance enable <node>`) — CRM live-migrates all remaining (relocatable) HA services off the node, choosing targets via the CRS algorithm
+3. **Wait for migrations to complete** — poll until no HA services remain on target hosts (timeout: `timeout_drain × maintenance_multiplier`)
+4. **Refresh VM topology** — re-fetch `/cluster/resources` so dispatch targets the correct (post-migration) host assignments
+
+If migrations time out, `policy.on_warning()` fires — in maintenance mode this prompts the operator to skip or abort.
+
+#### Common
+
 - Both `ha-manager` and `pvesh` require quorum, but run at startup before any host is powered off
+- HA disable happens before cordon to close the window where HA could migrate a VM onto the target host between preflight and disable
 
 ### Quorum Considerations
 
@@ -469,6 +505,8 @@ With defaults (drain=120, vm=120, poll=10): **4m 25s** (excluding HA disable, wh
 
 Without Kubernetes (no drain phase): `timeout_vm + 15 + poll_interval` = **2m 25s**.
 
+In maintenance/dry-run mode, operational timeouts are scaled by `maintenance_multiplier` (default: 10×). This gives ample time for live migrations and graceful operations when not battery-constrained. The worst-case formula above applies to emergency mode only.
+
 Why drain and VM shutdown are sequential: CP VM shutdowns are deferred until after all drains complete (the API server must remain available for drain evictions). The last VM shutdown is therefore dispatched at time `timeout_drain`, and the polling loop waits up to `timeout_vm + 15` seconds after that.
 
 Worker VMs and non-k8s VMs begin shutting down earlier (during or before the drain phase), so they overlap with the drain time and are never the bottleneck.
@@ -493,6 +531,7 @@ This gives the admin a concrete number to compare against their UPS battery esti
 |---------|---------|-------------|---------|
 | `timeout_drain` | 120s | `[timeouts] drain` | Max time for `kubectl drain` per node (all nodes drain in parallel) |
 | `timeout_vm` | 120s | `[timeouts] vm` | ACPI graceful shutdown wait per VM |
+| `maintenance_multiplier` | 10 | `[timeouts] maintenance_multiplier` | Multiplier applied to operational timeouts in maintenance/dry-run mode |
 | SIGTERM grace | 10s | No | Grace period after SIGTERM before SIGKILL |
 | SIGKILL grace | 5s | No | Final check after SIGKILL |
 | HA transition | 30s | No | Wait for `ha-manager set --state disabled` per resource |
@@ -543,6 +582,11 @@ After power is restored:
 4. **Re-enable HA** for VMs that had it:
    ```bash
    ha-manager set <sid> --state started
+   ```
+
+5. **Disable node maintenance** (partial `--hosts` runs only, if node-maintenance was enabled):
+   ```bash
+   ha-manager crm-command node-maintenance disable <node>
    ```
 
 5. **Start VMs** (networking/infrastructure VMs first, then k8s):

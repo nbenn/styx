@@ -394,6 +394,29 @@ class TestRuntimeBudget(unittest.TestCase):
         msgs = [c.args[0] for c in mock_log.call_args_list]
         self.assertTrue(any('0m 00s' in m for m in msgs))
 
+    @mock.patch('styx.orchestrate.log')
+    def test_multiplier_shows_both_values(self, mock_log):
+        topo = _topo(k8s_enabled=True, k8s_workers=['211'], k8s_cp=['201'],
+                     vm_host={'211': 'pve2', '201': 'pve3'})
+        cfg = _cfg(timeout_drain=1200, timeout_vm=1200)
+        _log_runtime_budget(topo, cfg, phase=3, multiplier=10)
+        msgs = [c.args[0] for c in mock_log.call_args_list]
+        # Should show actual value and emergency value in parens
+        self.assertTrue(any('1200s' in m and 'emergency: 120s' in m and 'drain' in m
+                            for m in msgs))
+        self.assertTrue(any('1215s' in m and 'emergency: 121s' in m and 'VM' in m
+                            for m in msgs))
+
+    @mock.patch('styx.orchestrate.log')
+    def test_multiplier_1_no_emergency_suffix(self, mock_log):
+        topo = _topo(k8s_enabled=True, k8s_workers=['211'], k8s_cp=['201'],
+                     vm_host={'211': 'pve2', '201': 'pve3'})
+        _log_runtime_budget(topo, _cfg(timeout_drain=120, timeout_vm=120),
+                            phase=3, multiplier=1)
+        msgs = [c.args[0] for c in mock_log.call_args_list]
+        # Should NOT show "emergency:" when multiplier is 1
+        self.assertFalse(any('emergency' in m for m in msgs))
+
 
 # ── Styx version check ───────────────────────────────────────────────────────
 

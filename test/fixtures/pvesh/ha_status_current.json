@@ -1,0 +1,14 @@
+[
+  {"id": "quorum", "node": "pve1", "quorate": 1, "status": "OK", "type": "quorum"},
+  {"id": "master", "node": "pve4", "status": "pve4 (active, Sat Mar 14 16:38:12 2026)", "timestamp": 1773502692, "type": "master"},
+  {"id": "lrm:pve1", "node": "pve1", "status": "pve1 (idle, Sat Mar 14 16:38:10 2026)", "timestamp": 1773502690, "type": "lrm"},
+  {"id": "lrm:pve2", "node": "pve2", "status": "pve2 (idle, Sat Mar 14 16:38:10 2026)", "timestamp": 1773502690, "type": "lrm"},
+  {"id": "lrm:pve3", "node": "pve3", "status": "pve3 (active, Sat Mar 14 16:38:07 2026)", "timestamp": 1773502687, "type": "lrm"},
+  {"id": "lrm:pve4", "node": "pve4", "status": "pve4 (active, Sat Mar 14 16:38:02 2026)", "timestamp": 1773502682, "type": "lrm"},
+  {"id": "lrm:pve5", "node": "pve5", "status": "pve5 (idle, Sat Mar 14 16:38:10 2026)", "timestamp": 1773502690, "type": "lrm"},
+  {"crm_state": "started", "group": "pinned", "id": "service:vm:100", "max_relocate": 1, "max_restart": 1, "node": "pve2", "request_state": "started", "sid": "vm:100", "state": "started", "status": "vm:100 (pve2, started)", "type": "service"},
+  {"crm_state": "started", "group": "anynode", "id": "service:vm:104", "max_relocate": 1, "max_restart": 1, "node": "pve3", "request_state": "started", "sid": "vm:104", "state": "started", "status": "vm:104 (pve3, started)", "type": "service"},
+  {"crm_state": "started", "group": "anynode", "id": "service:vm:106", "max_relocate": 1, "max_restart": 1, "node": "pve3", "request_state": "started", "sid": "vm:106", "state": "started", "status": "vm:106 (pve3, started)", "type": "service"},
+  {"crm_state": "started", "group": "anynode", "id": "service:vm:110", "max_relocate": 1, "max_restart": 1, "node": "pve2", "request_state": "started", "sid": "vm:110", "state": "started", "status": "vm:110 (pve2, started)", "type": "service"},
+  {"crm_state": "stopped", "group": "anynode", "id": "service:vm:112", "max_relocate": 1, "max_restart": 1, "node": "pve4", "request_state": "stopped", "sid": "vm:112", "state": "stopped", "status": "vm:112 (pve4, stopped)", "type": "service"}
+]

@@ -1,0 +1,4 @@
+[
+  {"comment": "Restricted to two nodes", "digest": "a66c5ee8d305a27fe26d4db26f5d8ce10c304dc0", "group": "pinned", "nodes": "pve2,pve1", "nofailback": 0, "restricted": 1, "type": "group"},
+  {"comment": "Any node", "digest": "a66c5ee8d305a27fe26d4db26f5d8ce10c304dc0", "group": "anynode", "nodes": "pve1,pve3,pve2,pve4", "nofailback": 0, "restricted": 0, "type": "group"}
+]

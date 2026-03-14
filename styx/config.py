@@ -24,6 +24,7 @@ class StyxConfig:
     ceph_flags: list = field(default_factory=lambda: list(DEFAULT_CEPH_FLAGS))
     timeout_drain: int = 120
     timeout_vm: int = 120
+    maintenance_multiplier: int = 10
     log_file: str = '/var/log/styx.log'
 
 
@@ -77,5 +78,8 @@ def load_config(path):
         raw = parser.get('timeouts', 'vm', fallback='').strip()
         if raw.isdigit():
             cfg.timeout_vm = int(raw)
+        raw = parser.get('timeouts', 'maintenance_multiplier', fallback='').strip()
+        if raw.isdigit():
+            cfg.maintenance_multiplier = int(raw)
 
     return cfg

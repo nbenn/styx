@@ -113,6 +113,27 @@ class TestTimeouts(unittest.TestCase):
         finally:
             os.unlink(p)
 
+    def test_maintenance_multiplier_default(self):
+        cfg = load_config('/nonexistent/path')
+        self.assertEqual(cfg.maintenance_multiplier, 10)
+
+    def test_maintenance_multiplier_parsed(self):
+        p = _write('[timeouts]\nmaintenance_multiplier = 5\n')
+        try:
+            self.assertEqual(load_config(p).maintenance_multiplier, 5)
+        finally:
+            os.unlink(p)
+
+    def test_maintenance_multiplier_with_other_timeouts(self):
+        p = _write('[timeouts]\ndrain = 60\nvm = 90\nmaintenance_multiplier = 3\n')
+        try:
+            cfg = load_config(p)
+            self.assertEqual(cfg.timeout_drain, 60)
+            self.assertEqual(cfg.timeout_vm, 90)
+            self.assertEqual(cfg.maintenance_multiplier, 3)
+        finally:
+            os.unlink(p)
+
 
 class TestComments(unittest.TestCase):
 

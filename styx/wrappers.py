@@ -67,6 +67,54 @@ def _parse_ha_status(data):
     ]
 
 
+def _parse_ha_resources(data):
+    """Parse /cluster/ha/resources JSON into list of resource dicts.
+
+    Returns list of dicts with keys: sid, group (or ''), state, type.
+    Only includes entries with state='started'.
+    """
+    return [
+        {
+            'sid': entry['sid'],
+            'group': entry.get('group', ''),
+            'state': entry['state'],
+            'type': entry.get('type', 'vm'),
+        }
+        for entry in data
+        if entry.get('state') == 'started' and 'sid' in entry
+    ]
+
+
+def _parse_ha_groups(data):
+    """Parse /cluster/ha/groups JSON into {name: {nodes: set, restricted: bool}}.
+
+    Proxmox returns nodes as a comma-separated string and restricted as 0/1.
+    """
+    return {
+        entry['group']: {
+            'nodes': set(entry.get('nodes', '').split(',')),
+            'restricted': bool(entry.get('restricted', 0)),
+        }
+        for entry in data
+        if 'group' in entry
+    }
+
+
+def _parse_ha_services_on_nodes(data, target_nodes):
+    """Return SIDs of started HA services currently running on target_nodes.
+
+    Uses the richer /cluster/ha/status/current entries (type='service')
+    which include a 'node' field.
+    """
+    return [
+        entry['sid']
+        for entry in data
+        if entry.get('type') == 'service'
+        and entry.get('state') == 'started'
+        and entry.get('node') in target_nodes
+    ]
+
+
 def _parse_running_vmids(output):
     """Return non-empty stripped lines from get_running_vmids shell output."""
     return [line.strip() for line in output.splitlines() if line.strip()]
@@ -185,6 +233,52 @@ class Operations:
             return _parse_ha_status(json.loads(r.stdout))
         except Exception:
             return []
+
+    def get_ha_resources(self):
+        """Return parsed HA resource list from /cluster/ha/resources."""
+        r = subprocess.run(
+            ['pvesh', 'get', '/cluster/ha/resources',
+             '--output-format', 'json'],
+            capture_output=True, text=True, check=True, timeout=10,
+        )
+        return _parse_ha_resources(json.loads(r.stdout))
+
+    def get_ha_groups(self):
+        """Return parsed HA groups dict from /cluster/ha/groups."""
+        r = subprocess.run(
+            ['pvesh', 'get', '/cluster/ha/groups',
+             '--output-format', 'json'],
+            capture_output=True, text=True, check=True, timeout=10,
+        )
+        return _parse_ha_groups(json.loads(r.stdout))
+
+    def enable_node_maintenance(self, node):
+        """Enable HA maintenance mode on a node."""
+        subprocess.run(
+            ['ha-manager', 'crm-command', 'node-maintenance', 'enable', node],
+            check=True, timeout=10,
+        )
+
+    def wait_ha_migrations_done(self, node, timeout):
+        """Poll until no started HA services remain on node. Returns True on success."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                r = subprocess.run(
+                    ['pvesh', 'get', '/cluster/ha/status/current',
+                     '--output-format', 'json'],
+                    capture_output=True, text=True, check=True, timeout=10,
+                )
+                remaining = _parse_ha_services_on_nodes(
+                    json.loads(r.stdout), {node},
+                )
+                if not remaining:
+                    return True
+                log(f'HA migrations pending on {node}: {" ".join(remaining)}')
+            except Exception:
+                pass
+            time.sleep(5)
+        return False
 
     def disable_ha_sid(self, sid):
         subprocess.run(

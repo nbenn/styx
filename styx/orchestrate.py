@@ -325,21 +325,30 @@ def preflight(topo, config, policy):
         )
 
 
-def _log_runtime_budget(topo, config, phase):
-    """Calculate and display worst-case runtime budget."""
+def _log_runtime_budget(topo, config, phase, multiplier=1):
+    """Calculate and display worst-case runtime budget.
+
+    When multiplier > 1 (maintenance/dry-run mode), shows both the actual
+    timeout values and the emergency-mode baseline in parentheses.
+    """
     log('--- Runtime budget (worst case) ---')
 
     total = 0
     has_k8s = topo.k8s_enabled and (topo.k8s_workers or topo.k8s_cp)
     has_vms = bool(topo.vm_host)
 
+    def _fmt(val):
+        if multiplier > 1:
+            return f'{val}s (emergency: {val // multiplier}s)'
+        return f'{val}s'
+
     if has_k8s:
-        log(f'  k8s drain (all nodes parallel): {config.timeout_drain}s')
+        log(f'  k8s drain (all nodes parallel): {_fmt(config.timeout_drain)}')
         total += config.timeout_drain
 
     if has_vms and phase >= 2:
         vm_s = config.timeout_vm + _VM_ESCALATION_OVERHEAD
-        log(f'  VM shutdown + escalation: {vm_s}s')
+        log(f'  VM shutdown + escalation: {_fmt(vm_s)}')
         total += vm_s
         poll_s = int(os.environ.get('STYX_POLL_INTERVAL', '10'))
         log(f'  Polling detection: {poll_s}s')
@@ -372,6 +381,70 @@ def _disable_ha(topo, ops, policy, scope):
                     policy.on_warning(f'HA transition timed out for {sid}')
         except Exception as e:
             policy.on_warning(f'failed to disable HA for {sid}: {e}')
+
+
+def _classify_ha_relocatable(ops, shutdown_hosts):
+    """Classify HA VMs on shutdown_hosts as relocatable or non-relocatable.
+
+    Returns (relocatable_sids: list[str], disable_sids: list[str]).
+
+    A VM is relocatable if it has no group, its group is not restricted,
+    or its restricted group has at least one member node NOT being shut down.
+    """
+    resources = ops.get_ha_resources()
+    groups = ops.get_ha_groups()
+
+    relocatable = []
+    disable = []
+    for res in resources:
+        # Only consider VMs whose VMID is on a target host.
+        # We don't know the VM→host mapping here; the caller filters by
+        # SID against topo.vm_host. But we receive all started HA resources
+        # and classify them all — the caller uses the SID to filter.
+        sid = res['sid']
+        group_name = res.get('group', '')
+        if not group_name or group_name not in groups:
+            # No group or unknown group → can run anywhere → relocatable
+            relocatable.append(sid)
+            continue
+        group = groups[group_name]
+        if not group['restricted']:
+            # Non-restricted group → can run anywhere → relocatable
+            relocatable.append(sid)
+            continue
+        # Restricted group — check if any member node survives
+        surviving = group['nodes'] - shutdown_hosts
+        if surviving:
+            relocatable.append(sid)
+        else:
+            disable.append(sid)
+
+    return relocatable, disable
+
+
+def _disable_ha_sids(ops, policy, sids):
+    """Disable HA for a specific list of SIDs."""
+    log(f'--- Disabling HA (non-relocatable): {" ".join(sids)} ---')
+    for sid in sids:
+        try:
+            policy.execute(f'disable_ha_sid {sid}', ops.disable_ha_sid, sid)
+            if not policy.dry_run:
+                if not ops.wait_ha_disabled(sid):
+                    policy.on_warning(f'HA transition timed out for {sid}')
+        except Exception as e:
+            policy.on_warning(f'failed to disable HA for {sid}: {e}')
+
+
+def _migrate_ha_vms(topo, ops, policy, hosts, timeout):
+    """Enable node maintenance on target hosts and wait for migrations."""
+    log('--- Enabling HA maintenance mode ---')
+    for host in hosts:
+        log(f'Enabling HA maintenance mode: {host}')
+        policy.execute(f'node_maintenance {host}', ops.enable_node_maintenance, host)
+    if not policy.dry_run:
+        for host in hosts:
+            if not ops.wait_ha_migrations_done(host, timeout):
+                policy.on_warning(f'HA migrations timed out for {host}')
 
 
 # ── per-VM actions ────────────────────────────────────────────────────────────
@@ -598,14 +671,29 @@ def _log_startup_checklist(topo, ceph_flags_set, osd_noout_ids=None):
         log(f'    → {cmd}')
 
 
-def _log_revert_summary(topo, args, ceph_flags_set, osd_noout_ids=None):
+def _log_revert_summary(topo, args, ceph_flags_set, osd_noout_ids=None,
+                        maintenance_hosts=None, disabled_sids=None):
     """Log a checklist of manual steps needed to restore normal cluster state.
 
     Called at the end of every --hosts run (skip in dry-run: nothing changed).
     """
     if osd_noout_ids is None:
         osd_noout_ids = []
+    if maintenance_hosts is None:
+        maintenance_hosts = []
+    if disabled_sids is None:
+        disabled_sids = []
     log('--- Partial run complete — revert checklist ---')
+
+    if maintenance_hosts:
+        log(f'  HA maintenance enabled: {" ".join(maintenance_hosts)}')
+        for host in maintenance_hosts:
+            log(f'    → ha-manager crm-command node-maintenance disable {host}')
+
+    if disabled_sids:
+        log(f'  HA disabled: {" ".join(disabled_sids)}')
+        for sid in disabled_sids:
+            log(f'    → ha-manager set {sid} --state started')
 
     if osd_noout_ids:
         osd_list = ' '.join(f'osd.{i}' for i in osd_noout_ids)
@@ -700,10 +788,20 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None, _preflight_fn=None)
     elif not config_explicit and not os.path.isfile(config_path):
         log(f'No config file at {config_path} — using defaults')
 
+    # Apply maintenance multiplier for non-emergency modes.
+    is_emergency = isinstance(policy, Policy) and not isinstance(policy, (DryRunPolicy, MaintenancePolicy))
+    if not is_emergency:
+        config.timeout_drain *= config.maintenance_multiplier
+        config.timeout_vm *= config.maintenance_multiplier
+
     log('=' * 40)
     log('styx run started')
     log('=' * 40)
     log(f'Mode: {args.mode}, Phase: {args.phase}')
+
+    if args.hosts and is_emergency:
+        log('NOTE: emergency mode with --hosts — skipping HA migration '
+            '(use maintenance mode for smart HA handling)')
 
     if _discover_fn is not None:
         topo = _discover_fn(config)
@@ -719,7 +817,8 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None, _preflight_fn=None)
 
     pf = _preflight_fn if _preflight_fn is not None else preflight
     pf(topo, config, policy)
-    _log_runtime_budget(topo, config, args.phase)
+    _log_runtime_budget(topo, config, args.phase,
+                        multiplier=1 if is_emergency else config.maintenance_multiplier)
     type_counts = {}
     for vt in topo.vm_type.values():
         type_counts[vt] = type_counts.get(vt, 0) + 1
@@ -746,7 +845,37 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None, _preflight_fn=None)
 
     # HA — disable before cordon to close the window where HA could
     # migrate a VM onto the target host between preflight and disable.
-    if should_disable_ha(args.phase):
+    # For partial runs in non-emergency mode: smart HA (migrate relocatable,
+    # disable non-relocatable). Otherwise: blanket disable.
+    maintenance_hosts = []
+    disabled_sids = []
+    if args.hosts and should_disable_ha(args.phase) and not is_emergency:
+        # Partial run, non-emergency: smart HA handling
+        shutdown_set = set(args.hosts)
+        try:
+            relocatable, disable = _classify_ha_relocatable(ops, shutdown_set)
+        except Exception as e:
+            policy.on_warning(f'HA classification failed ({e}) — falling back to blanket disable')
+            relocatable, disable = [], []
+            _disable_ha(topo, ops, policy, 'all')
+        else:
+            if disable:
+                _disable_ha_sids(ops, policy, disable)
+                disabled_sids = list(disable)
+            if relocatable:
+                log(f'Relocatable HA VMs: {" ".join(relocatable)}')
+                _migrate_ha_vms(topo, ops, policy, args.hosts,
+                                timeout=config.timeout_drain)
+                maintenance_hosts = list(args.hosts)
+                # Refresh topology — migrated VMs are now on different hosts
+                _try_refresh(topo, args)
+                # Log VMs that migrated out of scope
+                migrated = [sid for sid in relocatable
+                            if (sid.split(':', 1)[-1] if ':' in sid else sid)
+                            not in topo.vm_host]
+                for sid in migrated:
+                    log(f'{sid} migrated to surviving node — removed from shutdown scope')
+    elif should_disable_ha(args.phase):
         _disable_ha(topo, ops, policy, 'all')
     elif topo.k8s_enabled:
         _disable_ha(topo, ops, policy, 'k8s')
@@ -817,7 +946,9 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None, _preflight_fn=None)
     # Log completion notes before potentially going dark (poweroff flushes nothing).
     if not policy.dry_run:
         if args.hosts:
-            _log_revert_summary(topo, args, ceph_flags, osd_noout_ids=osd_noout_ids)
+            _log_revert_summary(topo, args, ceph_flags, osd_noout_ids=osd_noout_ids,
+                                maintenance_hosts=maintenance_hosts,
+                                disabled_sids=disabled_sids)
         else:
             _log_startup_checklist(topo, ceph_flags, osd_noout_ids=osd_noout_ids)
 

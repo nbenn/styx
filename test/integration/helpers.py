@@ -110,6 +110,19 @@ class FakeOperations:
     def get_ha_started_sids(self):
         return []
 
+    def get_ha_resources(self):
+        return getattr(self, '_ha_resources', [])
+
+    def get_ha_groups(self):
+        return getattr(self, '_ha_groups', {})
+
+    def enable_node_maintenance(self, node):
+        self.ha_log.append(f'NODE_MAINTENANCE {node}')
+
+    def wait_ha_migrations_done(self, node, timeout):
+        self.ha_log.append(f'WAIT_MIGRATIONS {node}')
+        return True
+
     def disable_ha_sid(self, sid):
         self.ha_log.append(f'DISABLE_HA {sid}')
 

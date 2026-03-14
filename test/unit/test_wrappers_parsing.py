@@ -1,4 +1,8 @@
-"""Unit tests for wrappers parsing helpers and _styx_cmd."""
+"""Unit tests for wrappers parsing helpers and _styx_cmd.
+
+New HA parsing tests (_parse_ha_resources, _parse_ha_groups,
+_parse_ha_services_on_nodes) are in test_ha_smart.py.
+"""
 
 import sys
 import unittest
