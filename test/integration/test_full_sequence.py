@@ -408,7 +408,7 @@ class TestSmartHA(unittest.TestCase):
         os.environ['LOG_FILE'] = os.path.join(self._tmp, 'styx.log')
         os.environ['STYX_POLL_INTERVAL'] = '1'
         try:
-            with patch('builtins.input', return_value='y'):
+            with patch('builtins.input', side_effect=lambda p='': 's' if '[s]' in p else 'y'):
                 main(
                     argv,
                     _discover_fn=lambda c: topo,

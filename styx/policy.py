@@ -113,7 +113,7 @@ class MaintenancePolicy(Policy):
                 log('FATAL: stdin closed — aborting (maintenance mode)')
                 import sys
                 sys.exit(1)
-            if choice in ('y', 'yes', ''):
+            if choice in ('y', 'yes'):
                 return
             if choice in ('a', 'abort', 'n', 'no'):
                 import sys

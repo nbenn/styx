@@ -147,7 +147,7 @@ def _refresh_vm_topology(topo, *, _pvesh_fn=None):
         return False
 
 
-def _try_refresh(topo, args, *, _pvesh_fn=None):
+def _try_refresh(topo, args, policy, *, _pvesh_fn=None):
     """Refresh VM topology; re-apply hosts filter if needed."""
     if _refresh_vm_topology(topo, _pvesh_fn=_pvesh_fn):
         if args.hosts:
@@ -158,7 +158,7 @@ def _try_refresh(topo, args, *, _pvesh_fn=None):
         lines = [f'  {h}: {" ".join(vms)}' for h, vms in sorted(by_host.items())]
         log('Refreshed VM topology:\n' + '\n'.join(lines))
     else:
-        log('Proceeding with stale VM topology')
+        policy.on_warning('VM topology refresh failed — proceeding with stale data')
 
 
 # Fixed escalation overhead in vm_shutdown.py: SIGTERM(10s) + SIGKILL(5s)
@@ -889,7 +889,7 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None, _preflight_fn=None)
                                 timeout=config.timeout_drain)
                 maintenance_hosts = list(args.hosts)
                 # Refresh topology — migrated VMs are now on different hosts
-                _try_refresh(topo, args)
+                _try_refresh(topo, args, policy)
                 # Log VMs that migrated out of scope
                 migrated = [sid for sid in relocatable
                             if (sid.split(':', 1)[-1] if ':' in sid else sid)
@@ -917,7 +917,7 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None, _preflight_fn=None)
 
     # Phase 1: dispatch for k8s VMs only, no poll, return
     if not should_run_polling(args.phase):
-        _try_refresh(topo, args)
+        _try_refresh(topo, args, policy)
         k8s_vmids = set(topo.k8s_workers + topo.k8s_cp)
         _dispatch_independent_phase(topo, config, ops, policy,
                                     do_poweroff=False, vm_filter=k8s_vmids)
@@ -935,6 +935,23 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None, _preflight_fn=None)
         )
 
     # ── INDEPENDENT PHASE ─────────────────────────────────────────────────
+
+    # Re-check Ceph health — the coordinated phase may have taken a long
+    # time and Ceph could have degraded independently.
+    if topo.ceph_enabled and not policy.dry_run:
+        try:
+            r = subprocess.run(
+                ['ceph', 'health', '-f', 'json'],
+                capture_output=True, text=True, timeout=10,
+            )
+            health = json.loads(r.stdout)
+            status = health.get('status', 'UNKNOWN')
+            if status != 'HEALTH_OK':
+                policy.on_warning(f'Ceph health degraded since preflight: {status}')
+            else:
+                log(f'Ceph re-check: {status}')
+        except Exception as e:
+            policy.on_warning(f'Ceph health re-check failed: {e}')
 
     # Ceph flags (phase 3 only, before dispatch).
     # Partial runs set per-OSD noout on only the target hosts' OSDs;
@@ -956,7 +973,7 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None, _preflight_fn=None)
             policy.execute('set_ceph_flags', ops.set_ceph_flags, ceph_flags)
 
     # Refresh VM topology right before dispatch (VMs may have migrated during drains)
-    _try_refresh(topo, args)
+    _try_refresh(topo, args, policy)
 
     # Dispatch local-shutdown to each host (one SSH per peer)
     _dispatch_independent_phase(topo, config, ops, policy, do_poweroff)

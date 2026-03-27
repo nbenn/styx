@@ -101,8 +101,8 @@ class TestMaintenancePolicy(unittest.TestCase):
     def test_phase_gate_yes_full_word(self):
         self._policy(['yes']).phase_gate('summary')
 
-    def test_phase_gate_empty_input_continues(self):
-        self._policy(['']).phase_gate('summary')
+    def test_phase_gate_empty_input_reprompts(self):
+        self._policy(['', 'y']).phase_gate('summary')
 
     def test_phase_gate_abort_exits_0(self):
         with self.assertRaises(SystemExit) as cm:
