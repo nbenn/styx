@@ -552,7 +552,7 @@ _SSH_MAX_FAILURES = 3
 
 
 def run_polling_loop(topo, ops, policy, do_poweroff, poll_interval=None,
-                     timeout=None):
+                     timeout=None, defer_poweroff=False):
     if poll_interval is None:
         poll_interval = int(os.environ.get('STYX_POLL_INTERVAL', '10'))
 
@@ -568,6 +568,7 @@ def run_polling_loop(topo, ops, policy, do_poweroff, poll_interval=None,
     ssh_failures = {h: 0 for h in topo.host_ips}
     ssh_failures.setdefault(topo.orchestrator, 0)
     powered_off = {topo.orchestrator}
+    deferred_hosts = set()
     while True:
         if deadline is not None and time.monotonic() >= deadline:
             log('WARNING: polling loop global timeout expired — breaking')
@@ -604,9 +605,12 @@ def run_polling_loop(topo, ops, policy, do_poweroff, poll_interval=None,
                 all_done = False
                 log(f'Host {host}: VMs still running ({" ".join(still)})')
             elif host != topo.orchestrator and host not in powered_off:
-                if do_poweroff:
+                if do_poweroff and not defer_poweroff:
                     log(f'Host {host}: all VMs stopped — powering off')
                     ops.poweroff_host(host)
+                elif do_poweroff:
+                    log(f'Host {host}: all VMs stopped (deferring poweroff for Ceph safety)')
+                    deferred_hosts.add(host)
                 powered_off.add(host)
         else:
             # for-loop completed without break — check orchestrator
@@ -638,6 +642,13 @@ def run_polling_loop(topo, ops, policy, do_poweroff, poll_interval=None,
 
         # for-loop hit break (orchestrator SSH exhausted) — exit polling
         break
+
+    # Deferred poweroffs: all VMs confirmed stopped, now safe to power off
+    # without risking Ceph OSD availability for still-flushing guests.
+    if deferred_hosts:
+        log('All VMs stopped across cluster — powering off hosts')
+        for host in sorted(deferred_hosts):
+            ops.poweroff_host(host)
 
 
 # ── revert summary (partial runs) ────────────────────────────────────────────
@@ -951,7 +962,12 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None, _preflight_fn=None)
     _dispatch_independent_phase(topo, config, ops, policy, do_poweroff)
 
     poll_timeout = config.timeout_vm + _VM_ESCALATION_OVERHEAD + 30
-    run_polling_loop(topo, ops, policy, do_poweroff, timeout=poll_timeout)
+    # When VMs live on Ceph, defer host poweroffs until all VMs across the
+    # cluster are confirmed stopped.  Powering off a host early takes its
+    # OSDs offline, which can block I/O for VMs still flushing on other hosts
+    # (min_size cannot be satisfied → writes hang → ACPI timeout → SIGKILL).
+    run_polling_loop(topo, ops, policy, do_poweroff, timeout=poll_timeout,
+                     defer_poweroff=topo.ceph_enabled)
 
     # Log completion notes before potentially going dark (poweroff flushes nothing).
     if not policy.dry_run:

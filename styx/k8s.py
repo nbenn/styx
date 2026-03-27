@@ -145,12 +145,16 @@ class K8sClient:
         """Cordon node, evict all drainable pods, poll until clear.
 
         Re-issues evictions on every poll so PDB-blocked pods are retried
-        once the budget allows.  Returns True if all pods cleared within
-        timeout, False otherwise.
+        once the budget allows.  Uses exponential backoff (2s → 30s cap)
+        to avoid hammering the API server with retries for pods that can't
+        be evicted yet (e.g. PDB-blocked during full cluster drain).
+
+        Returns True if all pods cleared within timeout, False otherwise.
         """
         self.cordon(node)
 
         deadline = time.monotonic() + timeout
+        interval = 2
         while time.monotonic() < deadline:
             pods = self.list_pods_on_node(node)['items']
             pending = [p for p in pods if self._drainable(p)]
@@ -158,7 +162,8 @@ class K8sClient:
                 return True
             for pod in pending:
                 self.evict(pod['metadata']['name'], pod['metadata']['namespace'])
-            time.sleep(5)
+            time.sleep(min(interval, max(0, deadline - time.monotonic())))
+            interval = min(interval * 2, 30)
 
         return False
 

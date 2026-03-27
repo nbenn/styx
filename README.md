@@ -244,15 +244,86 @@ All actions are logged to both stdout and `/var/log/styx.log` with timestamps. E
 
 ## Recovery
 
-After power is restored:
+After power is restored, bring the cluster back up in the reverse order that styx shut it down. The exact commands depend on your run — check `/var/log/styx.log` for the `--- Shutdown complete — startup checklist ---` entry, which lists the precise revert commands for your specific shutdown.
 
-> **Tip:** styx logs an exact startup checklist before powering off the orchestrator — check `/var/log/styx.log` for the `--- Shutdown complete — startup checklist ---` entry to get the precise commands for your run.
+### Full cluster restart
 
-1. Boot Proxmox hosts (via IPMI/iLO or physically)
-2. Unset Ceph OSD flags: `for f in noout norecover norebalance nobackfill nodown; do ceph osd unset $f; done`
-3. Re-enable HA: `ha-manager set <sid> --state started`
-4. Start VMs (infra → k8s control plane → workers)
-5. Uncordon k8s nodes: `kubectl uncordon --all`
+**1. Boot Proxmox hosts**
+
+Power on all nodes via IPMI/iLO or physically. Wait until all hosts are online and Proxmox cluster quorum is established:
+
+```bash
+pvecm status   # Quorate: Yes
+```
+
+**2. Clear Ceph OSD flags**
+
+Wait for all OSDs to come up, then unset the flags styx applied:
+
+```bash
+ceph osd unset noout
+ceph osd unset norecover
+ceph osd unset norebalance
+ceph osd unset nobackfill
+ceph osd unset nodown
+```
+
+Wait for Ceph to settle before starting VMs — active PGs should reach a healthy state:
+
+```bash
+ceph status   # look for "HEALTH_OK" or "HEALTH_WARN" with only expected warnings
+```
+
+**3. Re-enable HA**
+
+Styx disabled HA for managed VMs before shutting them down. Re-enable each service ID:
+
+```bash
+ha-manager set <sid> --state started   # e.g. ha-manager set vm:201 --state started
+```
+
+To find which SIDs need re-enabling:
+
+```bash
+ha-manager status   # look for services in "disabled" state
+```
+
+If HA is configured for your VMs, this step also starts them — skip to step 5.
+
+**4. Start VMs (if not HA-managed)**
+
+Start VMs in dependency order — infrastructure first, then Kubernetes control plane, then workers:
+
+```bash
+qm start <infra-vmids>
+qm start <control-plane-vmids>
+qm start <worker-vmids>
+```
+
+**5. Uncordon Kubernetes nodes**
+
+Once the k8s API is reachable:
+
+```bash
+kubectl uncordon <node1> <node2> ...
+# or to uncordon all nodes at once:
+kubectl get nodes -o name | xargs kubectl uncordon
+```
+
+Verify pods are scheduling and running:
+
+```bash
+kubectl get nodes        # all nodes should be Ready, no SchedulingDisabled
+kubectl get pods -A      # check for stuck pods
+```
+
+### Partial run (`--hosts`) restart
+
+For partial runs, styx prints a `--- Partial run complete — revert checklist ---` with the exact revert commands. The key differences from a full restart:
+
+- **Per-OSD noout** instead of global flags — clear with `ceph osd rm-noout osd.<id>` for each OSD on the affected hosts (do *not* use `ceph osd unset noout`, which would clear a cluster-wide flag that was never set)
+- **HA maintenance mode** may have been enabled per-host — disable with `ha-manager crm-command node-maintenance disable <host>`
+- **Only the targeted VMs** need restarting — `qm start <vmids>` as listed in the checklist
 
 ## Testing
 

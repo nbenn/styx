@@ -8,6 +8,7 @@ import threading
 import time
 import unittest
 from contextlib import redirect_stdout
+from pathlib import Path
 
 from styx.discover import ClusterTopology
 from styx.orchestrate import (
@@ -140,6 +141,44 @@ class TestPollingLoopOrchestratorVMs(unittest.TestCase):
         run_polling_loop(topo, ops, Policy(), do_poweroff=True, poll_interval=0.05)
         self.assertIn('POWEROFF pve2', ops.poweroff_log)
         self.assertIn('POWEROFF pve3', ops.poweroff_log)
+
+    def test_defer_poweroff_waits_for_all_vms(self):
+        """With defer_poweroff, hosts are not powered off until all VMs stop."""
+        start_fake_vm('301', self._tmp)
+        vm_host = {'211': 'pve2', '301': 'pve3'}
+        ops = FakeOperations(self._tmp, vm_host)
+        topo = _topo(
+            host_ips={'pve1': '10.0.0.1', 'pve2': '10.0.0.2', 'pve3': '10.0.0.3'},
+            vm_host=dict(vm_host),
+            vm_name={'211': 'w1', '301': 'w2'},
+            vm_type={'211': 'qemu', '301': 'qemu'},
+        )
+        # pve2 VM 211 already stopped; pve3 VM 301 still running.
+        # With defer_poweroff, pve2 should NOT be powered off before pve3's
+        # VM stops — both should be powered off together after the loop.
+        poweroff_while_vm_running = []
+
+        original_poweroff = ops.poweroff_host
+        def tracking_poweroff(host):
+            # Record whether any VMs are still running at poweroff time
+            if list(Path(self._tmp).glob('*.pid')):
+                poweroff_while_vm_running.append(host)
+            original_poweroff(host)
+        ops.poweroff_host = tracking_poweroff
+
+        def delayed_kill():
+            time.sleep(0.15)
+            kill_all_fake_vms(self._tmp)
+        threading.Thread(target=delayed_kill, daemon=True).start()
+
+        run_polling_loop(topo, ops, Policy(), do_poweroff=True,
+                         poll_interval=0.05, defer_poweroff=True)
+        # Both hosts should still be powered off
+        self.assertIn('POWEROFF pve2', ops.poweroff_log)
+        self.assertIn('POWEROFF pve3', ops.poweroff_log)
+        # But neither should have been powered off while VMs were running
+        self.assertEqual(poweroff_while_vm_running, [],
+                         'Host was powered off while VMs were still running')
 
 
 class TestDisableHA(unittest.TestCase):
