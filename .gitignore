@@ -1,7 +1,7 @@
 .devcontainer/.env
-.devcontainer/.claude.local/
+.devcontainer/.claude/
 .devcontainer/.gitconfig.local
-.devcontainer/.bashrc.local
+.devcontainer/.bashrc
 .claude
 __pycache__/
 *.pyc

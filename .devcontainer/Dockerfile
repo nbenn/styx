@@ -31,6 +31,11 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/*
 
+# Install Node.js
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install Claude Code
 ARG USERNAME=dev
 ARG USER_UID=1000
@@ -47,7 +52,7 @@ SHELL ["/bin/bash", "-c"]
 
 RUN cat >> /home/dev/.bashrc <<'EOF'
 
-if [ -f /workspace/.devcontainer/.bashrc.local ]; then
-  . /workspace/.devcontainer/.bashrc.local
+if [ -f /workspace/.devcontainer/.bashrc ]; then
+  . /workspace/.devcontainer/.bashrc
 fi
 EOF
