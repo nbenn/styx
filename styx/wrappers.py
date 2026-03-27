@@ -147,7 +147,7 @@ class Operations:
             '  [ -f "$f" ] || continue; '
             '  pid=$(cat "$f"); '
             '  kill -0 "$pid" 2>/dev/null && basename "$f" .pid; '
-            'done'
+            'done; true'
         ))
         return _parse_running_vmids(out)
 
@@ -363,4 +363,7 @@ class Operations:
             log(f'WARNING: log collection from {host}: {e}')
 
     def poweroff_self(self):
-        subprocess.run(['poweroff'])
+        try:
+            subprocess.run(['poweroff'], check=True)
+        except Exception as e:
+            log(f'WARNING: poweroff_self failed: {e}')

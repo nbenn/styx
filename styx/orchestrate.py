@@ -566,6 +566,7 @@ def run_polling_loop(topo, ops, policy, do_poweroff, poll_interval=None,
 
     deadline = (time.monotonic() + timeout) if timeout is not None else None
     ssh_failures = {h: 0 for h in topo.host_ips}
+    ssh_failures.setdefault(topo.orchestrator, 0)
     powered_off = {topo.orchestrator}
     while True:
         if deadline is not None and time.monotonic() >= deadline:
@@ -654,8 +655,9 @@ def _log_startup_checklist(topo, ceph_flags_set, osd_noout_ids=None):
                       cmds))
     elif ceph_flags_set:
         flags = ' '.join(ceph_flags_set)
+        cmds = ' && '.join(f'ceph osd unset {f}' for f in ceph_flags_set)
         items.append((f'Ceph OSD flags set: {flags}',
-                      f'(after Ceph healthy) ceph osd unset {flags}'))
+                      f'(after Ceph healthy) {cmds}'))
 
     k8s_nodes = [topo.vm_name.get(v, v) for v in topo.k8s_workers + topo.k8s_cp]
     if k8s_nodes:
@@ -701,9 +703,9 @@ def _log_revert_summary(topo, args, ceph_flags_set, osd_noout_ids=None,
         for i in osd_noout_ids:
             log(f'    → ceph osd rm-noout osd.{i}')
     elif ceph_flags_set:
-        flags = ' '.join(ceph_flags_set)
-        log(f'  Ceph OSD flags set: {flags}')
-        log(f'    → ceph osd unset {flags}')
+        log(f'  Ceph OSD flags set: {" ".join(ceph_flags_set)}')
+        for f in ceph_flags_set:
+            log(f'    → ceph osd unset {f}')
 
     k8s_nodes = [topo.vm_name.get(v, v) for v in topo.k8s_workers + topo.k8s_cp]
     if k8s_nodes:

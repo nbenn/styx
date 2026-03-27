@@ -74,13 +74,17 @@ def shutdown(vmid, timeout=120):
         print(f'VM {vmid} is not running')
         return 0
 
-    if _qmp_powerdown(vmid):
+    qmp_ok = _qmp_powerdown(vmid)
+    if qmp_ok:
         print(f'VM {vmid}: sent ACPI powerdown')
         if _poll_dead(pid, time.monotonic() + timeout):
             print(f'VM {vmid} stopped gracefully')
             return 0
 
-    print(f'VM {vmid}: timeout after {timeout}s, sending SIGTERM')
+    if qmp_ok:
+        print(f'VM {vmid}: ACPI timeout after {timeout}s, sending SIGTERM')
+    else:
+        print(f'VM {vmid}: QMP powerdown failed, sending SIGTERM')
     try:
         os.kill(pid, signal.SIGTERM)
     except ProcessLookupError:
