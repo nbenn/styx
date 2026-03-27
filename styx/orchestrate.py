@@ -859,6 +859,14 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None, _preflight_fn=None)
             relocatable, disable = [], []
             _disable_ha(topo, ops, policy, 'all')
         else:
+            # Filter to VMs actually on target hosts — topo.vm_host is
+            # already scoped to --hosts by _apply_hosts_filter.
+            target_vmids = set(topo.vm_host)
+            def _on_target(sid):
+                vmid = sid.split(':', 1)[-1] if ':' in sid else sid
+                return vmid in target_vmids
+            relocatable = [s for s in relocatable if _on_target(s)]
+            disable = [s for s in disable if _on_target(s)]
             if disable:
                 _disable_ha_sids(ops, policy, disable)
                 disabled_sids = list(disable)

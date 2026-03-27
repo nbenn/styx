@@ -4,6 +4,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
@@ -13,7 +14,7 @@ from styx.orchestrate import (
     _drain_all_k8s, _dispatch_independent_phase,
     run_polling_loop, main,
 )
-from styx.policy import Policy, DryRunPolicy
+from styx.policy import Policy, DryRunPolicy, MaintenancePolicy
 
 from test.integration.helpers import FakeOperations, start_fake_vm, kill_all_fake_vms
 
@@ -332,6 +333,145 @@ class TestMainPhaseControl(unittest.TestCase):
         """Phase 2 should not power off any host."""
         ops = self._run(2)
         self.assertEqual(ops.poweroff_log, [])
+
+
+class TestSmartHA(unittest.TestCase):
+    """Integration tests for smart HA handling in partial (--hosts) runs."""
+
+    # 4-node topology:
+    #   pve1 = orchestrator, VM 101 (non-k8s)
+    #   pve2 = VM 100 (HA, pinned group {pve1,pve2} restricted)
+    #          VM 110 (HA, anynode group, non-restricted)
+    #   pve3 = VM 104 (HA, anynode group, non-restricted) — NOT in shutdown set
+    #   pve4 = no VMs
+    _HA_VM_HOST = {
+        '101': 'pve1', '100': 'pve2', '110': 'pve2', '104': 'pve3',
+    }
+    _HA_VM_NAME = {
+        '101': 'infra-vm', '100': 'pinned-vm', '110': 'free-vm', '104': 'other-vm',
+    }
+    _HA_VM_TYPE = {
+        '101': 'qemu', '100': 'qemu', '110': 'qemu', '104': 'qemu',
+    }
+
+    _HA_RESOURCES = [
+        {'sid': 'vm:100', 'group': 'pinned', 'state': 'started', 'type': 'vm'},
+        {'sid': 'vm:110', 'group': 'anynode', 'state': 'started', 'type': 'vm'},
+        {'sid': 'vm:104', 'group': 'anynode', 'state': 'started', 'type': 'vm'},
+    ]
+    _HA_GROUPS = {
+        'pinned': {'nodes': {'pve1', 'pve2'}, 'restricted': True},
+        'anynode': {'nodes': {'pve1', 'pve2', 'pve3', 'pve4'}, 'restricted': False},
+    }
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp()
+        for vmid in ['101', '100', '110', '104']:
+            start_fake_vm(vmid, self._tmp)
+        self._conf = tempfile.NamedTemporaryFile(
+            mode='w', suffix='.conf', delete=False,
+        )
+        self._conf.write(
+            '[hosts]\npve1 = 10.0.0.1\npve2 = 10.0.0.2\n'
+            'pve3 = 10.0.0.3\npve4 = 10.0.0.4\n'
+            '[orchestrator]\nhost = pve1\n'
+            '[timeouts]\ndrain = 5\nvm = 5\nmaintenance_multiplier = 2\n'
+        )
+        self._conf.close()
+
+    def tearDown(self):
+        kill_all_fake_vms(self._tmp)
+        os.unlink(self._conf.name)
+
+    def _topo(self, hosts_filter=None):
+        topo = ClusterTopology(
+            host_ips={'pve1': '10.0.0.1', 'pve2': '10.0.0.2',
+                      'pve3': '10.0.0.3', 'pve4': '10.0.0.4'},
+            orchestrator='pve1',
+            vm_host=dict(self._HA_VM_HOST),
+            vm_name=dict(self._HA_VM_NAME),
+            vm_type=dict(self._HA_VM_TYPE),
+            k8s_workers=[], k8s_cp=[], k8s_enabled=False,
+        )
+        return topo
+
+    def _run(self, hosts, mode='maintenance'):
+        topo = self._topo()
+        ops = FakeOperations(self._tmp, self._HA_VM_HOST)
+        ops._ha_resources = self._HA_RESOURCES
+        ops._ha_groups = self._HA_GROUPS
+
+        argv = ['--phase', '3', '--mode', mode,
+                '--config', self._conf.name,
+                '--hosts'] + hosts
+
+        os.environ['LOG_FILE'] = os.path.join(self._tmp, 'styx.log')
+        os.environ['STYX_POLL_INTERVAL'] = '1'
+        try:
+            with patch('builtins.input', return_value='y'):
+                main(
+                    argv,
+                    _discover_fn=lambda c: topo,
+                    _ops_factory=lambda t, c: ops,
+                    _preflight_fn=lambda t, c, p: None,
+                )
+        finally:
+            os.environ.pop('LOG_FILE', None)
+            os.environ.pop('STYX_POLL_INTERVAL', None)
+
+        return ops
+
+    def test_partial_maintenance_disables_non_relocatable_only(self):
+        """Shutting down pve1+pve2: pinned VM (restricted to both) gets HA
+        disabled; anynode VMs on target hosts get migrated, not disabled."""
+        ops = self._run(['pve1', 'pve2'])
+        # vm:100 is pinned to {pve1,pve2} — both shutting down → HA disabled
+        self.assertIn('DISABLE_HA vm:100', ops.ha_log)
+        # vm:110 is anynode (non-restricted) on pve2 → migrated, not disabled
+        self.assertNotIn('DISABLE_HA vm:110', ops.ha_log)
+
+    def test_partial_maintenance_enables_node_maintenance(self):
+        """Node maintenance should be enabled on target hosts for migration."""
+        ops = self._run(['pve1', 'pve2'])
+        self.assertIn('NODE_MAINTENANCE pve1', ops.ha_log)
+        self.assertIn('NODE_MAINTENANCE pve2', ops.ha_log)
+
+    def test_partial_maintenance_waits_for_migrations(self):
+        ops = self._run(['pve1', 'pve2'])
+        self.assertIn('WAIT_MIGRATIONS pve1', ops.ha_log)
+        self.assertIn('WAIT_MIGRATIONS pve2', ops.ha_log)
+
+    def test_surviving_host_vms_not_affected(self):
+        """vm:104 on pve3 (not in shutdown set) should not be touched by HA ops."""
+        ops = self._run(['pve1', 'pve2'])
+        self.assertNotIn('DISABLE_HA vm:104', ops.ha_log)
+        self.assertNotIn('NODE_MAINTENANCE pve3', ops.ha_log)
+
+    def test_emergency_mode_skips_smart_ha(self):
+        """Emergency mode with --hosts should blanket-disable, not migrate."""
+        ops = self._run(['pve2'], mode='emergency')
+        # Emergency mode: no node-maintenance, no migration waits
+        maintenance_entries = [e for e in ops.ha_log
+                               if 'NODE_MAINTENANCE' in e]
+        self.assertEqual(maintenance_entries, [])
+
+    def test_single_host_relocatable_pinned(self):
+        """Shutting down only pve2: pinned group has pve1 surviving → relocatable."""
+        ops = self._run(['pve2'])
+        # vm:100 pinned to {pve1,pve2}, pve1 survives → should NOT be disabled
+        self.assertNotIn('DISABLE_HA vm:100', ops.ha_log)
+        # Node maintenance should be enabled for migration
+        self.assertIn('NODE_MAINTENANCE pve2', ops.ha_log)
+
+    def test_ha_ordering(self):
+        """HA disable must come before node maintenance."""
+        ops = self._run(['pve1', 'pve2'])
+        disable_indices = [i for i, e in enumerate(ops.ha_log)
+                           if e.startswith('DISABLE_HA')]
+        maintenance_indices = [i for i, e in enumerate(ops.ha_log)
+                               if e.startswith('NODE_MAINTENANCE')]
+        if disable_indices and maintenance_indices:
+            self.assertLess(max(disable_indices), min(maintenance_indices))
 
 
 class TestIdempotency(unittest.TestCase):
