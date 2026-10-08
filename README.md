@@ -185,21 +185,22 @@ Styx ships two scripts for remote triggering (e.g. from a UPS monitoring host):
 **1. Generate a dedicated SSH key** on the trigger host (the machine monitoring the UPS):
 
 ```bash
-ssh-keygen -t ed25519 -f ~/.ssh/styx-trigger -N "" -C "styx-trigger"
+ssh-keygen -t ed25519 -f ~/.ssh/styx -N "" -C "styx-trigger"
 ```
+
+`~/.ssh/styx` is the key `trigger.sh` uses by default (override with `--key`).
 
 **2. Install `gate.sh`** on every Proxmox node and add the public key to `authorized_keys`:
 
 ```bash
-# On each node:
-cp scripts/gate.sh /opt/styx/gate.sh
-chmod +x /opt/styx/gate.sh
+# On any node — installs styx.pyz and generates /opt/styx/gate.sh on all nodes:
+bash install.sh --include-gate
 
-# In /root/.ssh/authorized_keys:
+# In /root/.ssh/authorized_keys on each node:
 command="/opt/styx/gate.sh",restrict ssh-ed25519 AAAA... styx-trigger
 ```
 
-The `restrict` keyword disables all SSH features (pty, forwarding, tunnels) by default. The `command=` directive ensures the key can only invoke styx — regardless of what the SSH client requests, `gate.sh` passes arguments to `styx.pyz` and pins `--config` to `/etc/styx/styx.conf`.
+The `restrict` keyword disables all SSH features (pty, forwarding, tunnels) by default. The `command=` directive ensures the key can only invoke styx — regardless of what the SSH client requests, `gate.sh` only allows `orchestrate` and `-v`/`--version` and passes the arguments to the `styx.pyz` next to it. The config is therefore the default for a zipapp install: `/opt/styx/styx.conf`.
 
 **3. Install `trigger.sh`** on the UPS monitoring host and configure your UPS software to call it:
 
@@ -212,13 +213,13 @@ chmod +x /usr/local/bin/trigger
 
 ```bash
 # Trigger emergency shutdown, trying each node until one responds
-trigger --mode emergency 192.168.1.10 192.168.1.11 192.168.1.12
+trigger --controllers 192.168.1.10 192.168.1.11 192.168.1.12 --mode emergency
 
 # Dry-run (verify connectivity and plan without executing)
-trigger 192.168.1.10 192.168.1.11 192.168.1.12
+trigger --controllers 192.168.1.10 192.168.1.11 192.168.1.12
 
 # Custom SSH key path
-trigger --key /path/to/key --mode emergency 192.168.1.10 192.168.1.11
+trigger --key /path/to/key --controllers 192.168.1.10 192.168.1.11 --mode emergency
 ```
 
 The trigger script tries each node in order and stops at the first one that responds. Any node can act as orchestrator, so if the primary is down, the next reachable node takes over. If a connection drops mid-run and the script falls through to another node, both runs can proceed safely — all styx operations are idempotent.
@@ -228,7 +229,7 @@ The trigger script tries each node in order and stops at the first one that resp
 In `upsmon.conf` on the UPS monitoring host:
 
 ```
-SHUTDOWNCMD "/usr/local/bin/trigger --mode emergency 192.168.1.10 192.168.1.11 192.168.1.12"
+SHUTDOWNCMD "/usr/local/bin/trigger --controllers 192.168.1.10 192.168.1.11 192.168.1.12 --mode emergency"
 ```
 
 ### Other triggers
