@@ -336,6 +336,68 @@ class TestDrain(unittest.TestCase):
         self.assertEqual(evicts, [0, 2, 6, 14])
 
 
+class TestDrainIgnorePdb(unittest.TestCase):
+    """Full-cluster drains delete pods whose eviction a PDB refuses."""
+
+    def _run(self, ignore_pdb, delete_error=None, timeout=60):
+        pod = _pod('vault-0', namespace='vault')
+        state = {'deleted': False}
+        calls, events = [], []
+
+        def urlopen(req, **kw):
+            method = req.get_method()
+            calls.append((method, req.full_url))
+            if method == 'GET':
+                items = [] if state['deleted'] else [pod]
+                return _resp({'items': items})
+            if method == 'POST':   # eviction: PDB refuses
+                raise urllib.error.HTTPError(req.full_url, 429, 'PDB', {}, None)
+            if method == 'DELETE':
+                if delete_error:
+                    raise urllib.error.HTTPError(req.full_url, delete_error, 'x', {}, None)
+                state['deleted'] = True
+            return _resp({})
+
+        with patch('urllib.request.urlopen', side_effect=urlopen):
+            with _FakeClock():
+                ok = _client().drain('w1', timeout=timeout, ignore_pdb=ignore_pdb,
+                                     on_event=events.append)
+        return ok, calls, events
+
+    def test_blocked_pod_deleted_and_drain_completes(self):
+        ok, calls, events = self._run(ignore_pdb=True)
+        self.assertTrue(ok)
+        self.assertIn(('DELETE', 'https://k8s.example:6443/api/v1/namespaces/vault/pods/vault-0'),
+                      calls)
+        self.assertEqual(len(events), 1)
+        self.assertIn('deleted pod', events[0])
+
+    def test_pdb_respected_by_default(self):
+        ok, calls, _ = self._run(ignore_pdb=False, timeout=10)
+        self.assertFalse(ok)
+        self.assertNotIn('DELETE', [m for m, _ in calls])
+
+    def test_forbidden_delete_reported_not_raised(self):
+        ok, _, events = self._run(ignore_pdb=True, delete_error=403, timeout=10)
+        self.assertFalse(ok)
+        self.assertTrue(events)
+        self.assertIn('RBAC', events[0])
+
+
+class TestDeletePod(unittest.TestCase):
+
+    def test_404_is_gone(self):
+        err = urllib.error.HTTPError('u', 404, 'nf', {}, None)
+        with patch('urllib.request.urlopen', side_effect=err):
+            self.assertEqual(_client().delete_pod('p', 'ns'), 'gone')
+
+    def test_other_errors_raise(self):
+        err = urllib.error.HTTPError('u', 500, 'boom', {}, None)
+        with patch('urllib.request.urlopen', side_effect=err):
+            with self.assertRaises(urllib.error.HTTPError):
+                _client().delete_pod('p', 'ns')
+
+
 class _FakeClock:
     """Patch time.monotonic/time.sleep in styx.k8s; sleep advances the clock."""
 

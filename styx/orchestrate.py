@@ -457,11 +457,12 @@ def _migrate_ha_vms(topo, ops, policy, hosts, timeout):
 
 # ── per-VM actions ────────────────────────────────────────────────────────────
 
-def _drain_only(vmid, node, host, config, ops, policy):
+def _drain_only(vmid, node, host, config, ops, policy, ignore_pdb=False):
     """Drain a single k8s node. Returns a list of warning strings (empty = OK)."""
     log(f'Draining: {node} (VM {vmid} on {host})')
     warnings = []
-    ok = policy.execute(f'drain {node}', ops.drain_node, node, config.timeout_drain)
+    ok = policy.execute(f'drain {node}', ops.drain_node, node, config.timeout_drain,
+                        ignore_pdb=ignore_pdb)
     if ok is None:        # dry-run
         return warnings
     if not ok:
@@ -478,12 +479,19 @@ def _drain_only(vmid, node, host, config, ops, policy):
 
 # ── coordinated phase helpers ────────────────────────────────────────────────
 
-def _drain_all_k8s(topo, config, ops, policy):
-    """Drain all k8s nodes (workers + CP) in parallel. No VM shutdown."""
+def _drain_all_k8s(topo, config, ops, policy, ignore_pdb=False):
+    """Drain all k8s nodes (workers + CP) in parallel. No VM shutdown.
+
+    ignore_pdb: delete pods whose eviction a PDB refuses. Full-cluster
+    runs only — with every node cordoned no evicted pod can come back, so
+    a blocked budget (e.g. a single-replica Vault) would otherwise just
+    burn the whole drain timeout.
+    """
     if not topo.k8s_enabled or (not topo.k8s_workers and not topo.k8s_cp):
         return
 
-    log('--- Draining k8s nodes ---')
+    log('--- Draining k8s nodes' + (' (PDB-blocked pods deleted)' if ignore_pdb else '')
+        + ' ---')
 
     cp_set = set(topo.k8s_cp)
 
@@ -494,7 +502,7 @@ def _drain_all_k8s(topo, config, ops, policy):
             futs[ex.submit(
                 _drain_only,
                 vmid, topo.vm_name.get(vmid, vmid), topo.vm_host[vmid],
-                config, ops, policy,
+                config, ops, policy, ignore_pdb,
             )] = vmid
 
         for fut in concurrent.futures.as_completed(futs):
@@ -933,8 +941,10 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None, _preflight_fn=None)
             except Exception as e:
                 policy.on_warning(f'cordon failed for {node}: {e}')
 
-    # Drain all k8s nodes (workers + CP) in parallel — no VM shutdown
-    _drain_all_k8s(topo, config, ops, policy)
+    # Drain all k8s nodes (workers + CP) in parallel — no VM shutdown.
+    # Full runs bypass PDBs (everything is cordoned and going down);
+    # partial runs respect them, since pods can move to surviving nodes.
+    _drain_all_k8s(topo, config, ops, policy, ignore_pdb=not args.hosts)
 
     # Phase 1: dispatch for k8s VMs only, no poll, return
     if not should_run_polling(args.phase):

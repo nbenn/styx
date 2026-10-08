@@ -110,6 +110,19 @@ class K8sClient:
                 return 'retry'   # PDB blocking or rate-limited
             raise
 
+    def delete_pod(self, name, namespace):
+        """Delete a pod directly, bypassing PodDisruptionBudgets.
+
+        The pod's terminationGracePeriodSeconds is still respected.
+        """
+        try:
+            self._request('DELETE', f'/api/v1/namespaces/{namespace}/pods/{name}')
+            return 'deleted'
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return 'gone'
+            raise
+
     # ── volume attachments ────────────────────────────────────────────────────
 
     def list_volume_attachments(self):
@@ -149,7 +162,7 @@ class K8sClient:
         return (cls._blocks_drain(pod)
                 and not pod['metadata'].get('deletionTimestamp'))
 
-    def drain(self, node, timeout=120):
+    def drain(self, node, timeout=120, ignore_pdb=False, on_event=None):
         """Cordon node, evict all drainable pods, poll until they are gone.
 
         Done only when the pods no longer exist (not when they start
@@ -157,6 +170,11 @@ class K8sClient:
         down. Polls every 2s; re-issues evictions so PDB-blocked pods are
         retried once the budget allows, with exponential backoff (2s → 30s
         cap) to avoid hammering the API server.
+
+        ignore_pdb: when an eviction is refused (PDB), delete the pod
+        instead, like `kubectl drain --disable-eviction`. Only safe when
+        every node is cordoned: no evicted pod can come back, so a blocked
+        budget would never free up. on_event(msg) reports such deletions.
 
         Returns True if all pods cleared within timeout, False otherwise.
         """
@@ -172,14 +190,29 @@ class K8sClient:
                 return True
             if time.monotonic() >= next_evict:
                 for pod in remaining:
-                    if self._drainable(pod):
-                        self.evict(pod['metadata']['name'],
-                                   pod['metadata']['namespace'])
+                    if not self._drainable(pod):
+                        continue
+                    name = pod['metadata']['name']
+                    ns   = pod['metadata']['namespace']
+                    if self.evict(name, ns) == 'retry' and ignore_pdb:
+                        self._delete_blocked(name, ns, on_event)
                 next_evict = time.monotonic() + evict_interval
                 evict_interval = min(evict_interval * 2, 30)
             time.sleep(min(2, max(0, deadline - time.monotonic())))
 
         return False
+
+    def _delete_blocked(self, name, namespace, on_event):
+        """Delete a pod whose eviction was refused. Failures are reported,
+        not raised: the drain keeps retrying the eviction until timeout."""
+        report = on_event or (lambda msg: None)
+        try:
+            self.delete_pod(name, namespace)
+            report(f'eviction of {namespace}/{name} refused (PDB) — deleted pod')
+        except urllib.error.HTTPError as e:
+            hint = ' (RBAC: styx needs delete on pods)' if e.code == 403 else ''
+            report(f'eviction of {namespace}/{name} refused (PDB) and '
+                   f'delete failed: HTTP {e.code}{hint}')
 
 
 # ── CLI commands ──────────────────────────────────────────────────────────────

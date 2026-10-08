@@ -219,11 +219,12 @@ class Operations:
             return
         self._k8s.cordon(node)
 
-    def drain_node(self, node, timeout):
+    def drain_node(self, node, timeout, ignore_pdb=False):
         if self._k8s is None:
             log(f'WARNING: no k8s client configured, cannot drain {node}')
             return False
-        return self._k8s.drain(node, timeout)
+        return self._k8s.drain(node, timeout, ignore_pdb=ignore_pdb,
+                               on_event=lambda msg: log(f'{node}: {msg}'))
 
     def list_volume_attachments_for_node(self, node):
         if self._k8s is None:

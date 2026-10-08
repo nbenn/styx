@@ -54,6 +54,7 @@ class FakeOperations:
 
         self.cordon_log   = []
         self.drain_log    = []
+        self.drain_ignore_pdb = {}   # node -> ignore_pdb flag passed to drain
         self.shutdown_log = []
         self.ha_log       = []
         self.ceph_log     = []
@@ -95,8 +96,9 @@ class FakeOperations:
     def cordon_node(self, node):
         self.cordon_log.append(f'CORDON {node}')
 
-    def drain_node(self, node, timeout):
+    def drain_node(self, node, timeout, ignore_pdb=False):
         with self._lock:
+            self.drain_ignore_pdb[node] = ignore_pdb
             self.drain_log.append(f'DRAIN {node}')
             self.sequence_log.append((next(self._seq), f'DRAIN {node}'))
         return True

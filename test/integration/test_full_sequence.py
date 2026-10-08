@@ -297,6 +297,14 @@ class TestMainPhaseControl(unittest.TestCase):
         self.assertGreater(seq['WAIT_HA_RELEASED vm:101'], max(drain_seqs))
         self.assertLess(seq['WAIT_HA_RELEASED vm:101'], min(dispatch_seqs))
 
+    def test_full_run_drains_ignoring_pdbs(self):
+        ops = self._run(3)
+        self.assertEqual(ops.drain_ignore_pdb, {'worker1': True, 'cp1': True})
+
+    def test_partial_run_drains_respecting_pdbs(self):
+        ops = self._run(3, hosts=['pve2'])
+        self.assertEqual(ops.drain_ignore_pdb, {'worker1': False})
+
     def test_ceph_flags_before_dispatch(self):
         """Ceph flags must be set before LOCAL_SHUTDOWN is dispatched."""
         ops = self._run(3, ceph=True)

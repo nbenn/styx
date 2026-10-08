@@ -12,6 +12,7 @@ Styx performs four Kubernetes operations:
 | List node roles | `/api/v1/nodes` | list |
 | Cordon (mark unschedulable) | `/api/v1/nodes` | patch |
 | Drain (evict pods) | `/api/v1/pods`, `/api/v1/pods/eviction` | get, list, create |
+| Drain: delete PDB-blocked pods (full-cluster runs) | `/api/v1/pods` | delete |
 | Check stale volumes | `storage.k8s.io/volumeattachments` | list |
 
 ## 1. Create the service account and RBAC
@@ -34,10 +35,11 @@ rules:
   - apiGroups: [""]
     resources: [nodes]
     verbs: [get, list, patch]
-  # Drain: list pods on a node, then create evictions
+  # Drain: list pods on a node, then create evictions; full-cluster
+  # runs delete pods whose eviction a PodDisruptionBudget refuses
   - apiGroups: [""]
     resources: [pods]
-    verbs: [get, list]
+    verbs: [get, list, delete]
   - apiGroups: [""]
     resources: [pods/eviction]
     verbs: [create]

@@ -269,7 +269,7 @@ A dedicated ServiceAccount with minimal permissions for drain operations. A long
 
 **ClusterRole permissions**:
 - `nodes`: `get`, `list`, `patch` (for cordon/uncordon)
-- `pods`: `get`, `list` (to discover pods on a node)
+- `pods`: `get`, `list` (to discover pods on a node), `delete` (full-cluster runs: delete pods whose eviction a PDB refuses)
 - `pods/eviction`: `create` (to evict pods during drain)
 - `volumeattachments` (storage.k8s.io/v1): `get`, `list` (to detect stale CSI attachments post-drain)
 
@@ -861,6 +861,8 @@ Default flags for `kubectl drain`:
 Rationale: this is an emergency shutdown tool. Daemonsets can't be evicted, emptyDir data is lost anyway, and bare pods can't be allowed to block drain during a UPS event. Pod `terminationGracePeriodSeconds` is respected (no `--grace-period` override). Not configurable — these are the right choices for all styx use cases.
 
 Like `kubectl drain`, a node counts as drained only once the evicted pods no longer exist — not when they start terminating. The kubelet removes a pod object only after its containers have stopped and its volumes are unmounted, so this is what guarantees no pod still holds a volume (Ceph RBD, iSCSI, SMB/NFS) when the VM is shut down. Terminating pods are waited for but not re-evicted.
+
+**PodDisruptionBudgets:** in a full-cluster run every node is cordoned, so no evicted pod can be rescheduled and a blocked budget never frees up (e.g. a single-replica Vault, or a CNPG primary). Respecting it would only burn the whole drain timeout. Full runs therefore delete a pod when its eviction is refused (HTTP 429), like `kubectl drain --disable-eviction`; `terminationGracePeriodSeconds` is still respected. Partial `--hosts` runs respect PDBs, since pods can move to surviving nodes. If the delete is forbidden (RBAC), it is logged and the drain keeps retrying the eviction until timeout.
 
 ### Resolved: Discovery resource type filtering
 
