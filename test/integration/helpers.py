@@ -55,6 +55,7 @@ class FakeOperations:
         self.cordon_log   = []
         self.drain_log    = []
         self.drain_ignore_pdb = {}   # node -> ignore_pdb flag passed to drain
+        self.mount_checks = []       # hosts asked for release-mounts --dry-run
         self.shutdown_log = []
         self.ha_log       = []
         self.ceph_log     = []
@@ -105,6 +106,9 @@ class FakeOperations:
 
     def check_vm(self, host, vmid):
         pass  # dry-run only: report live VM status
+
+    def check_network_mounts(self, host):
+        self.mount_checks.append(host)   # dry-run only
 
     def list_volume_attachments_for_node(self, node):
         return []

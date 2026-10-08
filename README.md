@@ -119,7 +119,7 @@ All three modes run preflight checks — SSH reachability, styx version on peers
 
 All modes execute identical code paths, making maintenance mode a reliable way to exercise the emergency path against a real cluster.
 
-**Dry-run** logs every planned action with a `[dry-run]` prefix and skips execution entirely. Preflight failures are fatal, same as maintenance. It also invokes `vm-shutdown --dry-run` on each peer to report real VM running status — making it as close to a real run as possible without modifying any state.
+**Dry-run** logs every planned action with a `[dry-run]` prefix and skips execution entirely. Preflight failures are fatal, same as maintenance. It also invokes `vm-shutdown --dry-run` on each peer to report real VM running status, and `release-mounts --dry-run` on each host to list the network storage mounts it would unmount — making it as close to a real run as possible without modifying any state.
 
 ### Testing on a live cluster
 

@@ -568,8 +568,11 @@ def _release_network_mounts(topo, ops, policy, include_orchestrator):
                    if h != topo.orchestrator or include_orchestrator)
     log(f'--- Releasing network storage mounts: {" ".join(hosts)} ---')
     for host in hosts:
-        policy.execute(f'release_network_mounts {host}',
-                       ops.release_network_mounts, host)
+        if policy.dry_run:
+            # Like check_vm: ask the host what it would do, change nothing
+            ops.check_network_mounts(host)
+        else:
+            ops.release_network_mounts(host)
 
 
 # ── polling loop ──────────────────────────────────────────────────────────────

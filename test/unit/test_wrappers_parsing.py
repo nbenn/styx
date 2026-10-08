@@ -404,6 +404,17 @@ class TestOperationsDispatchLocalShutdown(unittest.TestCase):
         self.assertEqual(cmd, 'nohup python3 /opt/styx/styx.pyz release-mounts '
                               '</dev/null >/var/log/styx-release-mounts.log 2>&1 &')
 
+    def test_check_network_mounts_runs_dry_run_and_logs(self):
+        ops = Operations({'pve1': '10.0.0.1', 'pve2': '10.0.0.2'}, 'pve1')
+        with patch.object(sys, 'argv', ['/opt/styx/styx.pyz']):
+            with patch.object(ops, 'run_on_host',
+                              return_value='[dry-run] would unmount: /mnt/pve/backup\n') as mock_run:
+                with patch('styx.wrappers.log') as mock_log:
+                    ops.check_network_mounts('pve2')
+        self.assertEqual(mock_run.call_args[0],
+                         ('pve2', 'python3 /opt/styx/styx.pyz release-mounts --dry-run'))
+        mock_log.assert_called_once_with('pve2: [dry-run] would unmount: /mnt/pve/backup')
+
     def test_dispatch_with_dry_run(self):
         ops = Operations({'pve1': '10.0.0.1', 'pve2': '10.0.0.2'}, 'pve1')
         with patch.object(sys, 'argv', ['styx/__main__.py']):

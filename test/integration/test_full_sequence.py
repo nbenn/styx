@@ -274,6 +274,9 @@ class TestMainPhaseControl(unittest.TestCase):
             os.environ.pop('STYX_POLL_INTERVAL', None)
         self.assertEqual(ops.shutdown_log, [])
         self.assertEqual(ops.poweroff_log, [])
+        # Hosts report what they would unmount; nothing is released
+        self.assertEqual(sorted(ops.mount_checks), ['pve1', 'pve2', 'pve3'])
+        self.assertFalse(any(a.startswith('RELEASE_MOUNTS') for _, a in ops.sequence_log))
 
     def test_all_drains_before_dispatch(self):
         """All DRAINs must precede all LOCAL_SHUTDOWN entries."""

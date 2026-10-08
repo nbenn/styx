@@ -207,6 +207,16 @@ class Operations:
         except Exception as e:
             log(f'WARNING: check_vm {vmid} on {host}: {e}')
 
+    def check_network_mounts(self, host):
+        """Synchronously report what release-mounts would unmount. Dry-run only."""
+        cmd = f'{self._vm_prefix(host)} release-mounts --dry-run'
+        try:
+            out = self.run_on_host(host, cmd)
+            if out.strip():
+                log(f'{host}: {out.rstrip()}')
+        except Exception as e:
+            log(f'WARNING: check_network_mounts on {host}: {e}')
+
     def shutdown_vm(self, host, vmid, timeout):
         # Output goes to a per-VM log file on the host; collected by
         # poweroff_host() before the host is powered off.
