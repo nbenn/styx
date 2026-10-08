@@ -541,7 +541,7 @@ This gives the admin a concrete number to compare against their UPS battery esti
 | SIGKILL grace | 5s | No | Final check after SIGKILL |
 | HA transition | 30s | No | Max wait (all resources together) for the CRM to drop `ignored` resources |
 | Poll interval | 10s | `STYX_POLL_INTERVAL` env var | Polling loop sleep between VM status checks |
-| K8s drain poll | 2s | No | Sleep between pod eviction checks during drain |
+| K8s drain poll | 2s | No | Sleep between pod-list checks during drain; re-evictions back off 2s → 30s |
 | K8s API timeout | 10s | No | HTTP timeout for Kubernetes API calls |
 | SSH command timeout | 30s | No | Subprocess timeout for SSH commands |
 | QMP socket timeout | 5s | No | QMP socket connect/recv timeout |
@@ -859,6 +859,8 @@ Default flags for `kubectl drain`:
 ```
 
 Rationale: this is an emergency shutdown tool. Daemonsets can't be evicted, emptyDir data is lost anyway, and bare pods can't be allowed to block drain during a UPS event. Pod `terminationGracePeriodSeconds` is respected (no `--grace-period` override). Not configurable — these are the right choices for all styx use cases.
+
+Like `kubectl drain`, a node counts as drained only once the evicted pods no longer exist — not when they start terminating. The kubelet removes a pod object only after its containers have stopped and its volumes are unmounted, so this is what guarantees no pod still holds a volume (Ceph RBD, iSCSI, SMB/NFS) when the VM is shut down. Terminating pods are waited for but not re-evicted.
 
 ### Resolved: Discovery resource type filtering
 

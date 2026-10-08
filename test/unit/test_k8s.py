@@ -284,14 +284,81 @@ class TestDrain(unittest.TestCase):
             _resp({}),               # cordon
             _resp({'items': [pod]}), # loop 1: list — pod present
             _resp({}),               # loop 1: evict
-            _resp({'items': [pod]}), # loop 2: list — still there
-            _resp({}),               # loop 2: re-evict
+            _resp({'items': [pod]}), # loop 2 (t=2s): list — still there
+            _resp({}),               # loop 2: re-evict (backoff 2s elapsed)
             _resp({'items': []}),    # loop 3: list — gone → done
         ]
-        import styx.k8s as k8s_mod
         with patch('urllib.request.urlopen', side_effect=responses):
-            with patch.object(k8s_mod.time, 'sleep'):
+            with _FakeClock():
                 self.assertTrue(_client().drain('worker1', timeout=60))
+
+    def test_waits_for_terminating_pod_to_disappear(self):
+        """Evicted pods still terminating keep the drain open — their volumes
+        may still be mounted. They are not evicted again."""
+        terminating = _pod('db', deletion_ts='2026-10-08T12:00:00Z')
+        responses = [
+            _resp({}),                       # cordon
+            _resp({'items': [terminating]}), # loop 1: still terminating
+            _resp({'items': [terminating]}), # loop 2: still terminating
+            _resp({'items': []}),            # loop 3: gone → done
+        ]
+        with patch('urllib.request.urlopen', side_effect=responses) as m:
+            with _FakeClock():
+                self.assertTrue(_client().drain('worker1', timeout=60))
+        methods = [c.args[0].get_method() for c in m.call_args_list]
+        self.assertNotIn('POST', methods)
+
+    def test_terminating_pod_past_timeout_returns_false(self):
+        terminating = _pod('db', deletion_ts='2026-10-08T12:00:00Z')
+        responses = [_resp({})] + [_resp({'items': [terminating]})] * 10
+        with patch('urllib.request.urlopen', side_effect=responses):
+            with _FakeClock():
+                self.assertFalse(_client().drain('worker1', timeout=5))
+
+    def test_re_evicts_with_backoff_but_polls_every_2s(self):
+        """PDB-blocked pod: list every 2s, re-evict at 2s, 4s, 8s... gaps."""
+        pod = _pod('vault-0')
+        calls = []
+        clock = _FakeClock()
+
+        def urlopen(req, **kw):
+            calls.append((clock.now, req.get_method()))
+            if req.get_method() == 'GET':
+                return _resp({'items': [pod] if clock.now < 20 else []})
+            return _resp({})
+
+        with patch('urllib.request.urlopen', side_effect=urlopen):
+            with clock:
+                self.assertTrue(_client().drain('worker1', timeout=60))
+        gets   = [t for t, m in calls if m == 'GET']
+        evicts = [t for t, m in calls if m == 'POST']
+        self.assertEqual(gets, list(range(0, 22, 2)))
+        self.assertEqual(evicts, [0, 2, 6, 14])
+
+
+class _FakeClock:
+    """Patch time.monotonic/time.sleep in styx.k8s; sleep advances the clock."""
+
+    def __init__(self):
+        self.now = 0
+
+    def _sleep(self, s):
+        self.now += s
+
+    def __enter__(self):
+        import styx.k8s as k8s_mod
+        self._patches = [
+            patch.object(k8s_mod.time, 'monotonic', side_effect=lambda: self.now),
+            patch.object(k8s_mod.time, 'sleep', side_effect=self._sleep),
+        ]
+        for p in self._patches:
+            p.start()
+        return self
+
+    def __exit__(self, *exc):
+        for p in self._patches:
+            p.stop()
+        return False
 
 
 # ── fixture-based tests ───────────────────────────────────────────────────────

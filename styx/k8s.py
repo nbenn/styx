@@ -123,8 +123,13 @@ class K8sClient:
     # ── drain ─────────────────────────────────────────────────────────────────
 
     @staticmethod
-    def _drainable(pod):
-        """Return True if this pod should be evicted during a drain."""
+    def _blocks_drain(pod):
+        """Return True if the node is not drained while this pod exists.
+
+        Includes pods already being deleted: they may still be running and
+        holding volumes. The kubelet removes the pod object only once its
+        containers have stopped and its volumes are unmounted.
+        """
         meta = pod['metadata']
         # Skip mirror pods (static pods managed via kubelet staticPodPath;
         # not evictable via the API)
@@ -134,36 +139,45 @@ class K8sClient:
         for ref in meta.get('ownerReferences', []):
             if ref.get('kind') == 'DaemonSet':
                 return False
-        # Skip pods already being deleted
-        if meta.get('deletionTimestamp'):
-            return False
         # Skip completed / failed pods
         phase = pod.get('status', {}).get('phase', '')
         return phase not in ('Succeeded', 'Failed')
 
-    def drain(self, node, timeout=120):
-        """Cordon node, evict all drainable pods, poll until clear.
+    @classmethod
+    def _drainable(cls, pod):
+        """Return True if this pod should be evicted during a drain."""
+        return (cls._blocks_drain(pod)
+                and not pod['metadata'].get('deletionTimestamp'))
 
-        Re-issues evictions on every poll so PDB-blocked pods are retried
-        once the budget allows.  Uses exponential backoff (2s → 30s cap)
-        to avoid hammering the API server with retries for pods that can't
-        be evicted yet (e.g. PDB-blocked during full cluster drain).
+    def drain(self, node, timeout=120):
+        """Cordon node, evict all drainable pods, poll until they are gone.
+
+        Done only when the pods no longer exist (not when they start
+        terminating), so their volumes are unmounted before the VM goes
+        down. Polls every 2s; re-issues evictions so PDB-blocked pods are
+        retried once the budget allows, with exponential backoff (2s → 30s
+        cap) to avoid hammering the API server.
 
         Returns True if all pods cleared within timeout, False otherwise.
         """
         self.cordon(node)
 
         deadline = time.monotonic() + timeout
-        interval = 2
+        evict_interval = 2
+        next_evict = 0
         while time.monotonic() < deadline:
             pods = self.list_pods_on_node(node)['items']
-            pending = [p for p in pods if self._drainable(p)]
-            if not pending:
+            remaining = [p for p in pods if self._blocks_drain(p)]
+            if not remaining:
                 return True
-            for pod in pending:
-                self.evict(pod['metadata']['name'], pod['metadata']['namespace'])
-            time.sleep(min(interval, max(0, deadline - time.monotonic())))
-            interval = min(interval * 2, 30)
+            if time.monotonic() >= next_evict:
+                for pod in remaining:
+                    if self._drainable(pod):
+                        self.evict(pod['metadata']['name'],
+                                   pod['metadata']['namespace'])
+                next_evict = time.monotonic() + evict_interval
+                evict_interval = min(evict_interval * 2, 30)
+            time.sleep(min(2, max(0, deadline - time.monotonic())))
 
         return False
 
