@@ -174,6 +174,11 @@ class FakeOperations:
                     pass
                 pid_file.unlink()
 
+    def release_network_mounts(self, host):
+        entry = f'RELEASE_MOUNTS {host}'
+        with self._lock:
+            self.sequence_log.append((next(self._seq), entry))
+
     def poweroff_host(self, host):
         self.poweroff_log.append(f'POWEROFF {host}')
 

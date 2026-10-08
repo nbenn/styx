@@ -1,4 +1,4 @@
-"""python3 -m styx <orchestrate|vm-shutdown|local-shutdown> [args...]"""
+"""python3 -m styx <orchestrate|vm-shutdown|local-shutdown|release-mounts> [args...]"""
 
 import sys
 
@@ -20,6 +20,7 @@ Commands:
   orchestrate     Coordinate full cluster shutdown across all nodes
   vm-shutdown     Gracefully shut down a single VM via QMP/ACPI
   local-shutdown  Shut down local workloads and optionally power off host
+  release-mounts  Unmount Proxmox network storage (NFS/CIFS/CephFS) before shutdown
 
 Options:
   -h, --help      Show this help message
@@ -39,6 +40,9 @@ Run "styx <command> --help" for command-specific options.''', file=sys.stderr)
         run(argv)
     elif cmd == 'local-shutdown':
         from styx.local_shutdown import main as run
+        run(argv)
+    elif cmd == 'release-mounts':
+        from styx.release_mounts import main as run
         run(argv)
     else:
         print(f'Unknown command: {cmd}', file=sys.stderr)

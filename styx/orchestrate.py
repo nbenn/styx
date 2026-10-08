@@ -562,6 +562,16 @@ def _dispatch_independent_phase(topo, config, ops, policy, do_poweroff,
             )
 
 
+def _release_network_mounts(topo, ops, policy, include_orchestrator):
+    """Start `styx release-mounts` on every host that will be powered off."""
+    hosts = sorted(h for h in topo.host_ips
+                   if h != topo.orchestrator or include_orchestrator)
+    log(f'--- Releasing network storage mounts: {" ".join(hosts)} ---')
+    for host in hosts:
+        policy.execute(f'release_network_mounts {host}',
+                       ops.release_network_mounts, host)
+
+
 # ── polling loop ──────────────────────────────────────────────────────────────
 
 _SSH_MAX_FAILURES = 3
@@ -1011,6 +1021,15 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None, _preflight_fn=None)
     # Normally released long ago (one CRM cycle, during the drain).
     _wait_ha_released(ops, policy, released_sids)
 
+    # Power off the orchestrator only on full runs or when explicitly targeted.
+    poweroff_self = do_poweroff and (not args.hosts or topo.orchestrator in args.hosts)
+
+    # Unmount network storage on hosts about to be powered off, while NAS
+    # VMs and Ceph MONs are still up — otherwise those hosts' own shutdown
+    # later blocks unmounting it. In the background, alongside VM shutdown.
+    if do_poweroff:
+        _release_network_mounts(topo, ops, policy, poweroff_self)
+
     # Dispatch local-shutdown to each host (one SSH per peer)
     _dispatch_independent_phase(topo, config, ops, policy, do_poweroff)
 
@@ -1032,8 +1051,6 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None, _preflight_fn=None)
             _log_startup_checklist(topo, ceph_flags, osd_noout_ids=osd_noout_ids,
                                    released_sids=released_sids)
 
-    # Power off orchestrator only on full runs or when explicitly targeted.
-    poweroff_self = do_poweroff and (not args.hosts or topo.orchestrator in args.hosts)
     if poweroff_self:
         log('Powering off orchestrator (self)')
         policy.execute('poweroff_self', ops.poweroff_self)

@@ -305,6 +305,24 @@ class TestMainPhaseControl(unittest.TestCase):
         ops = self._run(3, hosts=['pve2'])
         self.assertEqual(ops.drain_ignore_pdb, {'worker1': False})
 
+    def _mount_releases(self, ops):
+        return sorted(a.split()[1] for _, a in ops.sequence_log
+                      if a.startswith('RELEASE_MOUNTS'))
+
+    def test_full_run_releases_mounts_on_all_hosts_before_dispatch(self):
+        ops = self._run(3)
+        self.assertEqual(self._mount_releases(ops), ['pve1', 'pve2', 'pve3'])
+        release = max(s for s, a in ops.sequence_log if a.startswith('RELEASE_MOUNTS'))
+        dispatch = min(s for s, a in ops.sequence_log if a.startswith('LOCAL_SHUTDOWN'))
+        self.assertLess(release, dispatch)
+
+    def test_partial_run_releases_mounts_on_target_hosts_only(self):
+        ops = self._run(3, hosts=['pve2'])
+        self.assertEqual(self._mount_releases(ops), ['pve2'])
+
+    def test_no_mount_release_without_poweroff(self):
+        self.assertEqual(self._mount_releases(self._run(2)), [])
+
     def test_ceph_flags_before_dispatch(self):
         """Ceph flags must be set before LOCAL_SHUTDOWN is dispatched."""
         ops = self._run(3, ceph=True)

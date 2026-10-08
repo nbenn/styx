@@ -19,6 +19,7 @@ _HA_TRANSITION_TIMEOUT = 30
 _VM_LOG              = '/var/log/styx-vm-{vmid}.log'
 _VM_LOG_GLOB         = '/var/log/styx-vm-*.log'
 _LOCAL_SHUTDOWN_LOG   = '/var/log/styx-local-shutdown.log'
+_RELEASE_MOUNTS_LOG   = '/var/log/styx-release-mounts.log'
 
 
 def _local_pyz():
@@ -238,6 +239,15 @@ class Operations:
         except Exception as e:
             log(f'WARNING: dispatch_local_shutdown to {host}: {e}')
 
+    def release_network_mounts(self, host):
+        """Start `styx release-mounts` on host in the background (nohup)."""
+        cmd = f'{self._vm_prefix(host)} release-mounts'
+        try:
+            self.run_on_host(
+                host, f'nohup {cmd} </dev/null >{_RELEASE_MOUNTS_LOG} 2>&1 &')
+        except Exception as e:
+            log(f'WARNING: release-mounts on {host}: {e}')
+
     # ── Kubernetes ────────────────────────────────────────────────────────────
 
     def cordon_node(self, node):
@@ -414,7 +424,8 @@ class Operations:
         # goes down (best-effort, 25s budget before the poweroff fires).
         try:
             r = subprocess.run(
-                ssh_base + [f'cat {_VM_LOG_GLOB} {_LOCAL_SHUTDOWN_LOG} 2>/dev/null'],
+                ssh_base + [f'cat {_VM_LOG_GLOB} {_LOCAL_SHUTDOWN_LOG} '
+                            f'{_RELEASE_MOUNTS_LOG} 2>/dev/null'],
                 capture_output=True, text=True, timeout=25,
             )
             if r.stdout.strip():

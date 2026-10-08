@@ -16,7 +16,7 @@ Styx splits the shutdown into a **coordinated phase** (requires cluster APIs) an
 | Phase | What happens |
 |-------|-------------|
 | Coordinated | Release HA (VMs keep running), cordon k8s nodes, drain all k8s nodes in parallel |
-| Independent | Set Ceph OSD flags, dispatch `local-shutdown` to each host (one SSH per peer), poll + power off |
+| Independent | Set Ceph OSD flags, unmount network storage (NFS/CIFS/CephFS under `/mnt/pve`) on hosts being powered off, dispatch `local-shutdown` to each host (one SSH per peer), poll + power off |
 
 After the coordinated phase, each peer shuts down its own VMs via QMP and has an autonomous poweroff deadline as a leader-dead fallback — if the orchestrator dies, peers power themselves off after `timeout_vm + 15s`. VM shutdowns bypass `qm shutdown` and the Proxmox API, so the script keeps working even after cluster quorum is lost.
 
@@ -62,7 +62,7 @@ Optionally, copy a config file if you need to override auto-discovery:
 cp styx.conf.example /opt/styx/styx.conf
 ```
 
-All subcommands (`orchestrate`, `vm-shutdown`, `local-shutdown`) are bundled in the single `styx.pyz` file.
+All subcommands (`orchestrate`, `vm-shutdown`, `local-shutdown`, `release-mounts`) are bundled in the single `styx.pyz` file.
 
 ## Usage
 

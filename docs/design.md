@@ -363,6 +363,8 @@ PHASE GATE (phase 3): "Drains complete — about to set Ceph flags, dispatch shu
 
 INDEPENDENT PHASE:
   set Ceph flags:     [ceph osd set <flags>] (phase 3 only, moved after gate)
+  release mounts:     [styx release-mounts, background, on each host being powered off]
+                      stop pvestatd, plain umount of NFS/CIFS/CephFS under /mnt/pve
   dispatch shutdown:  [styx local-shutdown <vmids> per host, one SSH per peer]
                       peers get --poweroff-delay (timeout_vm + 15s) as leader-dead fallback
                       orchestrator gets no delay (powers off after polling loop)
@@ -452,6 +454,20 @@ If migrations time out, `policy.on_warning()` fires — in maintenance mode this
 
 - Both `ha-manager` and `pvesh` require quorum, but run at startup before any host is powered off
 - HA release happens before cordon to close the window where HA could migrate a VM onto the target host between preflight and release
+
+### Network Storage Mounts
+
+Proxmox mounts NFS/CIFS/CephFS storages under `/mnt/pve` on every host. Their servers can go away before the hosts power off: a NAS VM is shut down with the other VMs, and Ceph MONs disappear as hosts power off. A host's own shutdown then blocks unmounting them (hard NFS mounts: until systemd's stop timeout), burning UPS runtime.
+
+So, on every host that will be powered off, styx runs `release-mounts` in the background right before dispatching VM shutdowns, while the servers are still up:
+
+- stop `pvestatd` (it re-mounts enabled storages within seconds; starts again on boot)
+- plain `umount` (not lazy, not forced) of each network mount under `/mnt/pve`, deepest first, 10s each; a umount stuck in the kernel is abandoned, not waited for
+- mounts still in use (a running VM's disk or ISO, a backup job) fail with EBUSY and are left alone
+- never touches `storage.cfg` — Proxmox re-mounts everything on boot
+- never unmounts the filesystem holding the running `styx.pyz` or `/var/log`
+
+Skipped with `--skip-poweroff` and on hosts a `--hosts` run leaves running. Output goes to `/var/log/styx-release-mounts.log`, collected with the other per-host logs before poweroff.
 
 ### Quorum Considerations
 
