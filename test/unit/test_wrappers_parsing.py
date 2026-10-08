@@ -279,7 +279,7 @@ class TestStyxCmd(unittest.TestCase):
 
     def test_pyz_path_used_when_running_as_zipapp(self):
         with patch.object(sys, 'argv', ['/opt/styx/styx.pyz']):
-            self.assertEqual(_styx_cmd(), 'python3 /opt/styx/styx.pyz')
+            self.assertEqual(_styx_cmd(), 'python3 -u /opt/styx/styx.pyz')
 
     def test_relative_pyz_path_made_absolute(self):
         """'./styx.pyz' run from /opt/styx must not reach peers as a relative
@@ -292,7 +292,7 @@ class TestStyxCmd(unittest.TestCase):
             try:
                 with patch.object(sys, 'argv', ['./styx.pyz']):
                     self.assertEqual(_local_pyz(), os.path.realpath(pyz))
-                    self.assertEqual(_styx_cmd(), f'python3 {os.path.realpath(pyz)}')
+                    self.assertEqual(_styx_cmd(), f'python3 -u {os.path.realpath(pyz)}')
             finally:
                 os.chdir(cwd)
 
@@ -307,11 +307,11 @@ class TestStyxCmd(unittest.TestCase):
 
     def test_module_invocation_for_source_install(self):
         with patch.object(sys, 'argv', ['/opt/styx/styx/__main__.py']):
-            self.assertEqual(_styx_cmd(), 'python3 -m styx')
+            self.assertEqual(_styx_cmd(), 'python3 -u -m styx')
 
     def test_module_invocation_when_argv_empty(self):
         with patch.object(sys, 'argv', []):
-            self.assertEqual(_styx_cmd(), 'python3 -m styx')
+            self.assertEqual(_styx_cmd(), 'python3 -u -m styx')
 
 
 # ── Operations.shutdown_vm command construction ───────────────────────────────
@@ -326,7 +326,7 @@ class TestOperationsShutdownVmCmd(unittest.TestCase):
         log_file = _VM_LOG.format(vmid='101')
         mock_run.assert_called_once_with(
             'pve1',
-            f'nohup python3 /mnt/pve/shared/snippets/styx.pyz vm-shutdown 101 120 </dev/null >{log_file} 2>&1 &',
+            f'nohup python3 -u /mnt/pve/shared/snippets/styx.pyz vm-shutdown 101 120 </dev/null >{log_file} 2>&1 &',
         )
 
     def test_shutdown_vm_peer_uses_local_pyz(self):
@@ -337,7 +337,7 @@ class TestOperationsShutdownVmCmd(unittest.TestCase):
         log_file = _VM_LOG.format(vmid='102')
         mock_run.assert_called_once_with(
             'pve2',
-            f'nohup python3 /mnt/pve/shared/snippets/styx.pyz vm-shutdown 102 120 </dev/null >{log_file} 2>&1 &',
+            f'nohup python3 -u /mnt/pve/shared/snippets/styx.pyz vm-shutdown 102 120 </dev/null >{log_file} 2>&1 &',
         )
 
     def test_shutdown_vm_uses_module_from_source(self):
@@ -348,7 +348,7 @@ class TestOperationsShutdownVmCmd(unittest.TestCase):
         log_file = _VM_LOG.format(vmid='102')
         mock_run.assert_called_once_with(
             'pve2',
-            f'nohup python3 -m styx vm-shutdown 102 120 </dev/null >{log_file} 2>&1 &',
+            f'nohup python3 -u -m styx vm-shutdown 102 120 </dev/null >{log_file} 2>&1 &',
         )
 
 
@@ -363,7 +363,7 @@ class TestOperationsCheckVm(unittest.TestCase):
                 ops.check_vm('pve1', '101')
         mock_run.assert_called_once_with(
             'pve1',
-            'python3 /mnt/pve/shared/styx.pyz vm-shutdown 101 --dry-run',
+            'python3 -u /mnt/pve/shared/styx.pyz vm-shutdown 101 --dry-run',
         )
 
     def test_check_vm_peer_uses_local_pyz(self):
@@ -373,7 +373,7 @@ class TestOperationsCheckVm(unittest.TestCase):
                 ops.check_vm('pve2', '211')
         mock_run.assert_called_once_with(
             'pve2',
-            'python3 /mnt/pve/shared/styx.pyz vm-shutdown 211 --dry-run',
+            'python3 -u /mnt/pve/shared/styx.pyz vm-shutdown 211 --dry-run',
         )
 
     def test_check_vm_dev_mode_uses_module(self):
@@ -383,7 +383,7 @@ class TestOperationsCheckVm(unittest.TestCase):
                 ops.check_vm('pve2', '211')
         mock_run.assert_called_once_with(
             'pve2',
-            'python3 -m styx vm-shutdown 211 --dry-run',
+            'python3 -u -m styx vm-shutdown 211 --dry-run',
         )
 
 
@@ -423,7 +423,7 @@ class TestOperationsDispatchLocalShutdown(unittest.TestCase):
                 ops.release_network_mounts('pve2')
         host, cmd = mock_run.call_args[0]
         self.assertEqual(host, 'pve2')
-        self.assertEqual(cmd, 'nohup python3 /opt/styx/styx.pyz release-mounts '
+        self.assertEqual(cmd, 'nohup python3 -u /opt/styx/styx.pyz release-mounts '
                               '</dev/null >/var/log/styx-release-mounts.log 2>&1 &')
 
     def test_check_network_mounts_runs_dry_run_and_logs(self):
@@ -434,7 +434,7 @@ class TestOperationsDispatchLocalShutdown(unittest.TestCase):
                 with patch('styx.wrappers.log') as mock_log:
                     ops.check_network_mounts('pve2')
         self.assertEqual(mock_run.call_args[0],
-                         ('pve2', 'python3 /opt/styx/styx.pyz release-mounts --dry-run'))
+                         ('pve2', 'python3 -u /opt/styx/styx.pyz release-mounts --dry-run'))
         mock_log.assert_called_once_with('pve2: [dry-run] would unmount: /mnt/pve/backup')
 
     def test_dispatch_with_dry_run(self):

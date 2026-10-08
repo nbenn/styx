@@ -98,7 +98,7 @@ class TestZipappSmoke(unittest.TestCase):
             from styx.k8s import K8sClient        # the one lazy import in real code
             from styx.orchestrate import discover, preflight
 
-            expected_cmd = 'python3 ' + os.path.realpath({pyz!r})
+            expected_cmd = 'python3 -u ' + os.path.realpath({pyz!r})
 
             # Simulate CephFS going away.
             os.unlink({pyz!r})

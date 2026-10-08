@@ -326,6 +326,26 @@ class TestMainPhaseControl(unittest.TestCase):
     def test_no_mount_release_without_poweroff(self):
         self.assertEqual(self._mount_releases(self._run(2)), [])
 
+    def test_phase_gate_prompt_text(self):
+        import io
+        from contextlib import redirect_stdout
+        topo = _default_topo(self._tmp, ceph=True)
+        ops  = FakeOperations(self._tmp, _VM_HOST)
+        os.environ['LOG_FILE'] = os.path.join(self._tmp, 'styx.log')
+        os.environ['STYX_POLL_INTERVAL'] = '1'
+        try:
+            with patch('builtins.input',
+                       side_effect=lambda p='': 's' if '[s]' in p else 'y'), \
+                 redirect_stdout(io.StringIO()) as out:
+                main(['--phase', '3', '--mode', 'maintenance', '--config', self._conf.name],
+                     _discover_fn=lambda c: topo, _ops_factory=lambda t, c: ops,
+                     _preflight_fn=lambda t, c, p: None)
+        finally:
+            os.environ.pop('LOG_FILE', None)
+            os.environ.pop('STYX_POLL_INTERVAL', None)
+        self.assertIn('Drains complete — about to set Ceph flags, dispatch shutdown '
+                      'with autonomous poweroff. Proceed?', out.getvalue())
+
     def test_ceph_flags_before_dispatch(self):
         """Ceph flags must be set before LOCAL_SHUTDOWN is dispatched."""
         ops = self._run(3, ceph=True)

@@ -7,12 +7,14 @@ import tempfile
 import threading
 import time
 import unittest
+import unittest.mock
 from contextlib import redirect_stdout
 from pathlib import Path
 
 from styx.discover import ClusterTopology
 from styx.orchestrate import (
     run_polling_loop, _release_ha, _wait_ha_released,
+    _wait_volumes_detached, _drain_only,
     _log_revert_summary, _log_startup_checklist,
 )
 from styx.policy import Policy, DryRunPolicy
@@ -307,6 +309,59 @@ class TestWaitHAReleased(unittest.TestCase):
         _wait_ha_released(ops, DryRunPolicy(), ['vm:100'])
         _wait_ha_released(ops, Policy(), [])
         self.assertEqual(calls, [])
+
+
+class TestVolumeDetach(unittest.TestCase):
+    """VolumeAttachments trail pod deletion; partial runs wait for them."""
+
+    def _ops(self, polls):
+        ops = FakeOperations(tempfile.mkdtemp(), {})
+        it = iter(polls)
+        ops.va_calls = 0
+        def list_vas(node):
+            ops.va_calls += 1
+            return next(it)
+        ops.list_volume_attachments_for_node = list_vas
+        return ops
+
+    def _clock(self):
+        clock = {'t': 0}
+        import styx.orchestrate as orch
+        return clock, (
+            unittest.mock.patch.object(orch.time, 'monotonic', side_effect=lambda: clock['t']),
+            unittest.mock.patch.object(orch.time, 'sleep',
+                                       side_effect=lambda s: clock.__setitem__('t', clock['t'] + s)),
+        )
+
+    def _run(self, fn):
+        _, patches = self._clock()
+        with patches[0], patches[1]:
+            return fn()
+
+    def test_attachments_clearing_within_timeout(self):
+        ops = self._ops([['csi-a', 'csi-b'], ['csi-a'], []])
+        self.assertEqual(self._run(lambda: _wait_volumes_detached(ops, 'w1')), [])
+        self.assertEqual(ops.va_calls, 3)
+
+    def test_attachments_remaining_after_timeout(self):
+        ops = self._ops([['csi-a']] * 100)
+        self.assertEqual(self._run(lambda: _wait_volumes_detached(ops, 'w1', timeout=10)),
+                         ['csi-a'])
+
+    def test_partial_drain_warns_only_if_attachments_remain(self):
+        from styx.config import StyxConfig
+        ops = self._ops([['csi-a']] * 100)
+        warnings = self._run(lambda: _drain_only('211', 'w1', 'pve2', StyxConfig(), ops, Policy()))
+        self.assertEqual(len(warnings), 1)
+        self.assertIn('still present 30s after drain of w1: csi-a', warnings[0])
+
+    def test_full_cluster_drain_skips_attachment_check(self):
+        from styx.config import StyxConfig
+        ops = self._ops([['csi-a']] * 100)
+        warnings = self._run(lambda: _drain_only('211', 'w1', 'pve2', StyxConfig(), ops,
+                                                 Policy(), full_cluster=True))
+        self.assertEqual(warnings, [])
+        self.assertEqual(ops.va_calls, 0)
 
 
 class TestLogRevertSummary(unittest.TestCase):

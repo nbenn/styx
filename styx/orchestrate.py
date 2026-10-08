@@ -457,40 +457,61 @@ def _migrate_ha_vms(topo, ops, policy, hosts, timeout):
 
 # ── per-VM actions ────────────────────────────────────────────────────────────
 
-def _drain_only(vmid, node, host, config, ops, policy, ignore_pdb=False):
-    """Drain a single k8s node. Returns a list of warning strings (empty = OK)."""
+# Detaching (VolumeAttachment deletion) trails pod deletion by a few seconds
+_DETACH_TIMEOUT = 30
+
+
+def _wait_volumes_detached(ops, node, timeout=_DETACH_TIMEOUT, interval=2):
+    """Poll until no VolumeAttachments remain for node. Returns the remaining."""
+    deadline = time.monotonic() + timeout
+    while True:
+        remaining = ops.list_volume_attachments_for_node(node)
+        if not remaining or time.monotonic() >= deadline:
+            return remaining
+        time.sleep(interval)
+
+
+def _drain_only(vmid, node, host, config, ops, policy, full_cluster=False):
+    """Drain a single k8s node. Returns a list of warning strings (empty = OK).
+
+    full_cluster: PDB-blocked pods are deleted, and VolumeAttachments are
+    not checked — the CSI controllers that detach volumes are evicted too,
+    so attachments stay behind; harmless, as the pods are already gone.
+    """
     log(f'Draining: {node} (VM {vmid} on {host})')
     warnings = []
     ok = policy.execute(f'drain {node}', ops.drain_node, node, config.timeout_drain,
-                        ignore_pdb=ignore_pdb)
+                        ignore_pdb=full_cluster)
     if ok is None:        # dry-run
         return warnings
     if not ok:
         warnings.append(f'drain timed out or failed for {node}')
     else:
         log(f'Drained: {node}')
-        stale = ops.list_volume_attachments_for_node(node)
-        if stale:
-            warnings.append(
-                f'stale VolumeAttachments after drain of {node}: {", ".join(stale)}'
-            )
+        if not full_cluster:
+            stale = _wait_volumes_detached(ops, node)
+            if stale:
+                warnings.append(
+                    f'VolumeAttachments still present {_DETACH_TIMEOUT}s after '
+                    f'drain of {node}: {", ".join(stale)}'
+                )
     return warnings
 
 
 # ── coordinated phase helpers ────────────────────────────────────────────────
 
-def _drain_all_k8s(topo, config, ops, policy, ignore_pdb=False):
+def _drain_all_k8s(topo, config, ops, policy, full_cluster=False):
     """Drain all k8s nodes (workers + CP) in parallel. No VM shutdown.
 
-    ignore_pdb: delete pods whose eviction a PDB refuses. Full-cluster
-    runs only — with every node cordoned no evicted pod can come back, so
-    a blocked budget (e.g. a single-replica Vault) would otherwise just
-    burn the whole drain timeout.
+    full_cluster: delete pods whose eviction a PDB refuses — with every
+    node cordoned no evicted pod can come back, so a blocked budget (e.g.
+    a single-replica Vault) would otherwise just burn the whole drain
+    timeout. Also skips the VolumeAttachment check (see _drain_only).
     """
     if not topo.k8s_enabled or (not topo.k8s_workers and not topo.k8s_cp):
         return
 
-    log('--- Draining k8s nodes' + (' (PDB-blocked pods deleted)' if ignore_pdb else '')
+    log('--- Draining k8s nodes' + (' (PDB-blocked pods deleted)' if full_cluster else '')
         + ' ---')
 
     cp_set = set(topo.k8s_cp)
@@ -502,7 +523,7 @@ def _drain_all_k8s(topo, config, ops, policy, ignore_pdb=False):
             futs[ex.submit(
                 _drain_only,
                 vmid, topo.vm_name.get(vmid, vmid), topo.vm_host[vmid],
-                config, ops, policy, ignore_pdb,
+                config, ops, policy, full_cluster,
             )] = vmid
 
         for fut in concurrent.futures.as_completed(futs):
@@ -957,7 +978,7 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None, _preflight_fn=None)
     # Drain all k8s nodes (workers + CP) in parallel — no VM shutdown.
     # Full runs bypass PDBs (everything is cordoned and going down);
     # partial runs respect them, since pods can move to surviving nodes.
-    _drain_all_k8s(topo, config, ops, policy, ignore_pdb=not args.hosts)
+    _drain_all_k8s(topo, config, ops, policy, full_cluster=not args.hosts)
 
     # Phase 1: dispatch for k8s VMs only, no poll, return
     if not should_run_polling(args.phase):
@@ -973,11 +994,9 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None, _preflight_fn=None)
 
     do_poweroff = should_poweroff_hosts(args.phase) and not args.skip_poweroff
     if do_poweroff:
-        ceph_note = ', set Ceph flags' if topo.ceph_enabled else ''
-        policy.phase_gate(
-            f'Drains complete — about to{ceph_note} dispatch shutdown'
-            f' with autonomous poweroff. Proceed?'
-        )
+        steps = (['set Ceph flags'] if topo.ceph_enabled else []) + [
+            'dispatch shutdown with autonomous poweroff']
+        policy.phase_gate(f'Drains complete — about to {", ".join(steps)}. Proceed?')
 
     # ── INDEPENDENT PHASE ─────────────────────────────────────────────────
 

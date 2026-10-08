@@ -41,10 +41,13 @@ def _styx_cmd():
 
     When running as a zipapp (sys.argv[0] ends with .pyz), the zipapp path is
     passed directly to python3.  Falls back to 'python3 -m styx' for
-    development / source installs.
+    development / source installs. Always unbuffered (-u), see below.
     """
     pyz = _local_pyz()
-    return f'python3 {pyz}' if pyz else 'python3 -m styx'
+    # -u: output goes to log files that are collected while the process may
+    # still run (local-shutdown sleeps until its poweroff deadline) — with
+    # default block buffering they would still be empty.
+    return f'python3 -u {pyz}' if pyz else 'python3 -u -m styx'
 
 
 def _parse_osd_tree(data):

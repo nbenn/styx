@@ -271,7 +271,7 @@ A dedicated ServiceAccount with minimal permissions for drain operations. A long
 - `nodes`: `get`, `list`, `patch` (for cordon/uncordon)
 - `pods`: `get`, `list` (to discover pods on a node), `delete` (full-cluster runs: delete pods whose eviction a PDB refuses)
 - `pods/eviction`: `create` (to evict pods during drain)
-- `volumeattachments` (storage.k8s.io/v1): `get`, `list` (to detect stale CSI attachments post-drain)
+- `volumeattachments` (storage.k8s.io/v1): `get`, `list` (partial runs: wait up to 30s after a drain for CSI attachments to be detached, warn if some remain; skipped in full-cluster runs, where the CSI controllers that detach volumes are evicted too)
 
 ## Shutdown Sequence
 
@@ -729,7 +729,7 @@ ops.shutdown_vm(host, vmid, timeout)           # nohup styx vm-shutdown (fire-an
 ops.dispatch_local_shutdown(host, workloads, ...)  # nohup styx local-shutdown (one per host); workloads=[(type, vmid), ...]
 ops.cordon_node(node)                          # kubectl cordon via K8sClient
 ops.drain_node(node, timeout) -> bool          # kubectl drain via K8sClient
-ops.list_volume_attachments_for_node(node)     # CSI VolumeAttachment check post-drain
+ops.list_volume_attachments_for_node(node)     # CSI VolumeAttachment check post-drain (partial runs)
 ops.get_ha_started_sids()                      # ha-manager status -> started SIDs
 ops.release_ha_sid(sid)                        # ha-manager set --state ignored
 ops.wait_ha_released(sids, timeout) -> list    # poll until CRM drops them; returns still-managed SIDs
