@@ -362,7 +362,13 @@ def _log_runtime_budget(topo, config, phase, multiplier=1):
 
 # ── HA ────────────────────────────────────────────────────────────────────────
 
-def _disable_ha(topo, ops, policy, scope):
+def _release_ha(topo, ops, policy, scope):
+    """Take started HA resources in scope out of HA control. Returns the SIDs.
+
+    Sets state 'ignored' and does not wait: the VMs keep running (gaia must
+    stay up through the k8s drain) and the CRM lets go within one cycle.
+    Callers confirm with _wait_ha_released() before dispatching shutdowns.
+    """
     target = (
         set(topo.k8s_workers + topo.k8s_cp) if scope == 'k8s'
         else set(topo.vm_host)   # 'all' — only VMs we're actually shutting down
@@ -370,17 +376,9 @@ def _disable_ha(topo, ops, policy, scope):
     sids = [sid for sid in ops.get_ha_started_sids()
             if (sid.split(':', 1)[-1] if ':' in sid else sid) in target]
     if not sids:
-        log('No HA resources to disable')
-        return
-    log(f'--- Disabling HA: {" ".join(sids)} ---')
-    for sid in sids:
-        try:
-            policy.execute(f'disable_ha_sid {sid}', ops.disable_ha_sid, sid)
-            if not policy.dry_run:
-                if not ops.wait_ha_disabled(sid):
-                    policy.on_warning(f'HA transition timed out for {sid}')
-        except Exception as e:
-            policy.on_warning(f'failed to disable HA for {sid}: {e}')
+        log('No HA resources to release')
+        return []
+    return _release_ha_sids(ops, policy, sids)
 
 
 def _classify_ha_relocatable(ops, shutdown_hosts):
@@ -422,17 +420,27 @@ def _classify_ha_relocatable(ops, shutdown_hosts):
     return relocatable, disable
 
 
-def _disable_ha_sids(ops, policy, sids):
-    """Disable HA for a specific list of SIDs."""
-    log(f'--- Disabling HA (non-relocatable): {" ".join(sids)} ---')
+def _release_ha_sids(ops, policy, sids):
+    """Set each SID to HA state 'ignored'. Returns the SIDs released."""
+    log(f'--- Releasing HA (state=ignored, VMs keep running): {" ".join(sids)} ---')
+    released = []
     for sid in sids:
         try:
-            policy.execute(f'disable_ha_sid {sid}', ops.disable_ha_sid, sid)
-            if not policy.dry_run:
-                if not ops.wait_ha_disabled(sid):
-                    policy.on_warning(f'HA transition timed out for {sid}')
+            policy.execute(f'release_ha_sid {sid}', ops.release_ha_sid, sid)
+            released.append(sid)
         except Exception as e:
-            policy.on_warning(f'failed to disable HA for {sid}: {e}')
+            policy.on_warning(f'failed to release HA for {sid}: {e}')
+    return released
+
+
+def _wait_ha_released(ops, policy, sids):
+    """Confirm the CRM has dropped sids, so it won't restart VMs we stop."""
+    if not sids or policy.dry_run:
+        return
+    pending = ops.wait_ha_released(sids)
+    if pending:
+        policy.on_warning(f'HA still manages {" ".join(pending)} — '
+                          f'CRM may restart these VMs after shutdown')
 
 
 def _migrate_ha_vms(topo, ops, policy, hosts, timeout):
@@ -653,10 +661,13 @@ def run_polling_loop(topo, ops, policy, do_poweroff, poll_interval=None,
 
 # ── revert summary (partial runs) ────────────────────────────────────────────
 
-def _log_startup_checklist(topo, ceph_flags_set, osd_noout_ids=None):
+def _log_startup_checklist(topo, ceph_flags_set, osd_noout_ids=None,
+                           released_sids=None):
     """Log steps to run after bringing a fully-shutdown cluster back up."""
     if osd_noout_ids is None:
         osd_noout_ids = []
+    if released_sids is None:
+        released_sids = []
     items = []
 
     if osd_noout_ids:
@@ -669,6 +680,12 @@ def _log_startup_checklist(topo, ceph_flags_set, osd_noout_ids=None):
         cmds = ' && '.join(f'ceph osd unset {f}' for f in ceph_flags_set)
         items.append((f'Ceph OSD flags set: {flags}',
                       f'(after Ceph healthy) {cmds}'))
+
+    if released_sids:
+        cmds = ' && '.join(f'ha-manager set {sid} --state started'
+                           for sid in released_sids)
+        items.append((f'HA released (ignored): {" ".join(released_sids)}',
+                      f'(starts the VMs) {cmds}'))
 
     k8s_nodes = [topo.vm_name.get(v, v) for v in topo.k8s_workers + topo.k8s_cp]
     if k8s_nodes:
@@ -685,7 +702,7 @@ def _log_startup_checklist(topo, ceph_flags_set, osd_noout_ids=None):
 
 
 def _log_revert_summary(topo, args, ceph_flags_set, osd_noout_ids=None,
-                        maintenance_hosts=None, disabled_sids=None):
+                        maintenance_hosts=None, released_sids=None):
     """Log a checklist of manual steps needed to restore normal cluster state.
 
     Called at the end of every --hosts run (skip in dry-run: nothing changed).
@@ -694,8 +711,8 @@ def _log_revert_summary(topo, args, ceph_flags_set, osd_noout_ids=None,
         osd_noout_ids = []
     if maintenance_hosts is None:
         maintenance_hosts = []
-    if disabled_sids is None:
-        disabled_sids = []
+    if released_sids is None:
+        released_sids = []
     log('--- Partial run complete — revert checklist ---')
 
     if maintenance_hosts:
@@ -703,9 +720,9 @@ def _log_revert_summary(topo, args, ceph_flags_set, osd_noout_ids=None,
         for host in maintenance_hosts:
             log(f'    → ha-manager crm-command node-maintenance disable {host}')
 
-    if disabled_sids:
-        log(f'  HA disabled: {" ".join(disabled_sids)}')
-        for sid in disabled_sids:
+    if released_sids:
+        log(f'  HA released (ignored): {" ".join(released_sids)}')
+        for sid in released_sids:
             log(f'    → ha-manager set {sid} --state started')
 
     if osd_noout_ids:
@@ -856,21 +873,23 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None, _preflight_fn=None)
 
     # ── COORDINATED PHASE ─────────────────────────────────────────────────
 
-    # HA — disable before cordon to close the window where HA could
-    # migrate a VM onto the target host between preflight and disable.
+    # HA — release before cordon to close the window where HA could
+    # migrate a VM onto the target host between preflight and release.
+    # Releasing (state 'ignored') does not stop anything: VMs keep running
+    # through the drain and are shut down by the dispatch below.
     # For partial runs in non-emergency mode: smart HA (migrate relocatable,
-    # disable non-relocatable). Otherwise: blanket disable.
+    # release non-relocatable). Otherwise: blanket release.
     maintenance_hosts = []
-    disabled_sids = []
+    released_sids = []
     if args.hosts and should_disable_ha(args.phase) and not is_emergency:
         # Partial run, non-emergency: smart HA handling
         shutdown_set = set(args.hosts)
         try:
             relocatable, disable = _classify_ha_relocatable(ops, shutdown_set)
         except Exception as e:
-            policy.on_warning(f'HA classification failed ({e}) — falling back to blanket disable')
+            policy.on_warning(f'HA classification failed ({e}) — falling back to blanket release')
             relocatable, disable = [], []
-            _disable_ha(topo, ops, policy, 'all')
+            released_sids = _release_ha(topo, ops, policy, 'all')
         else:
             # Filter to VMs actually on target hosts — topo.vm_host is
             # already scoped to --hosts by _apply_hosts_filter.
@@ -881,8 +900,10 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None, _preflight_fn=None)
             relocatable = [s for s in relocatable if _on_target(s)]
             disable = [s for s in disable if _on_target(s)]
             if disable:
-                _disable_ha_sids(ops, policy, disable)
-                disabled_sids = list(disable)
+                released_sids = _release_ha_sids(ops, policy, disable)
+                # Wait now, not before dispatch: node maintenance below must
+                # not try to migrate VMs the CRM hasn't let go of yet.
+                _wait_ha_released(ops, policy, released_sids)
             if relocatable:
                 log(f'Relocatable HA VMs: {" ".join(relocatable)}')
                 _migrate_ha_vms(topo, ops, policy, args.hosts,
@@ -897,9 +918,9 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None, _preflight_fn=None)
                 for sid in migrated:
                     log(f'{sid} migrated to surviving node — removed from shutdown scope')
     elif should_disable_ha(args.phase):
-        _disable_ha(topo, ops, policy, 'all')
+        released_sids = _release_ha(topo, ops, policy, 'all')
     elif topo.k8s_enabled:
-        _disable_ha(topo, ops, policy, 'k8s')
+        released_sids = _release_ha(topo, ops, policy, 'k8s')
 
     # Cordon all k8s nodes (idempotent)
     if topo.k8s_enabled:
@@ -918,6 +939,7 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None, _preflight_fn=None)
     # Phase 1: dispatch for k8s VMs only, no poll, return
     if not should_run_polling(args.phase):
         _try_refresh(topo, args, policy)
+        _wait_ha_released(ops, policy, released_sids)
         k8s_vmids = set(topo.k8s_workers + topo.k8s_cp)
         _dispatch_independent_phase(topo, config, ops, policy,
                                     do_poweroff=False, vm_filter=k8s_vmids)
@@ -975,6 +997,10 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None, _preflight_fn=None)
     # Refresh VM topology right before dispatch (VMs may have migrated during drains)
     _try_refresh(topo, args, policy)
 
+    # HA must have let go before we stop VMs, or the CRM restarts them.
+    # Normally released long ago (one CRM cycle, during the drain).
+    _wait_ha_released(ops, policy, released_sids)
+
     # Dispatch local-shutdown to each host (one SSH per peer)
     _dispatch_independent_phase(topo, config, ops, policy, do_poweroff)
 
@@ -991,9 +1017,10 @@ def main(argv=None, *, _discover_fn=None, _ops_factory=None, _preflight_fn=None)
         if args.hosts:
             _log_revert_summary(topo, args, ceph_flags, osd_noout_ids=osd_noout_ids,
                                 maintenance_hosts=maintenance_hosts,
-                                disabled_sids=disabled_sids)
+                                released_sids=released_sids)
         else:
-            _log_startup_checklist(topo, ceph_flags, osd_noout_ids=osd_noout_ids)
+            _log_startup_checklist(topo, ceph_flags, osd_noout_ids=osd_noout_ids,
+                                   released_sids=released_sids)
 
     # Power off orchestrator only on full runs or when explicitly targeted.
     poweroff_self = do_poweroff and (not args.hosts or topo.orchestrator in args.hosts)

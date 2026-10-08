@@ -320,7 +320,7 @@ Any `on_warning()` call during execution (drain timeout, stale VolumeAttachment,
 Both modes run **identical code paths**. `Policy.phase_gate()` and `Policy.on_warning()` are no-ops in emergency mode. This is intentional — maintenance mode is the primary way to exercise the emergency path against a real cluster.
 
 **Maintainability invariant — all mutations must go through `policy.execute()`.**
-Dry-run safety depends on every cluster-mutating operation being wrapped in a `policy.execute(description, fn, *args)` call. There is no compile-time or runtime guard that prevents calling an `Operations` method (e.g. `ops.cordon_node()`, `ops.disable_ha_sid()`) directly — if a future code path bypasses `policy.execute()`, that mutation will fire even in dry-run mode. When adding new operations:
+Dry-run safety depends on every cluster-mutating operation being wrapped in a `policy.execute(description, fn, *args)` call. There is no compile-time or runtime guard that prevents calling an `Operations` method (e.g. `ops.cordon_node()`, `ops.release_ha_sid()`) directly — if a future code path bypasses `policy.execute()`, that mutation will fire even in dry-run mode. When adding new operations:
 
 1. Never call an `Operations` mutating method directly from orchestration code. Always wrap it: `policy.execute('description', ops.method, args)`.
 2. For code paths that branch on `policy.dry_run` explicitly (e.g. `run_polling_loop`, `_dispatch_independent_phase`), ensure the dry-run branch performs **no** mutations and returns early.
@@ -348,13 +348,14 @@ STARTUP:
   hosts filter:       [_apply_hosts_filter(topo, --hosts)] (if --hosts specified; restricts topology)
 
 COORDINATED PHASE (leader, requires quorum/API):
-  cordon all k8s:     [kubectl cordon] (instant, prevents rescheduling before HA is disabled)
-  HA handling:        full run:    disable all HA [ha-manager set ... --state disabled]
+  HA handling:        full run:    release all HA [ha-manager set ... --state ignored]
+                                   (no VM is stopped; release confirmed right before dispatch)
                       --hosts run: classify relocatable vs non-relocatable VMs
-                                   disable HA for non-relocatable only
+                                   release HA for non-relocatable only (confirmed immediately)
                                    enable node-maintenance → Proxmox migrates relocatable VMs
                                    wait for migrations, refresh VM topology
                       (k8s scope for phase 1; all for phase 2+)
+  cordon all k8s:     [kubectl cordon] (instant, prevents rescheduling)
   drain all k8s:      [drain all workers + CP in parallel, no VM shutdown]
 
 PHASE GATE (phase 3): "Drains complete — about to set Ceph flags, dispatch shutdown
@@ -384,8 +385,8 @@ PEER (leader-dead fallback):
 | `--phase 3` (default) | HA (all), cordon, drain | all VMs, with poweroff delay | set flags | poll, **poweroff hosts** | poweroff orchestrator |
 
 Notes:
-- Phase 1 dispatches `local-shutdown` for k8s VMs only (fire-and-forget). Does **not** wait for them to stop. HA is disabled for k8s VMIDs only.
-- Phase 2 widens HA disable to all resources, dispatches all VMs, and runs the polling loop.
+- Phase 1 dispatches `local-shutdown` for k8s VMs only (fire-and-forget). Does **not** wait for them to stop. HA is released for k8s VMIDs only.
+- Phase 2 widens HA release to all resources, dispatches all VMs, and runs the polling loop.
 - Phase 3 adds Ceph flags (after the phase gate, before dispatch) and host poweroff with autonomous fallback.
 - Cordon always runs regardless of phase (idempotent prerequisite).
 - If `[kubernetes]` is not configured, drain is skipped entirely.
@@ -411,12 +412,16 @@ Some VMs may have Proxmox HA enabled. HA must be managed before shutdown to prev
 
 #### Full-cluster shutdown (no `--hosts`)
 
-All HA resources are disabled unconditionally — there are no surviving nodes to migrate to.
+All HA resources are released unconditionally — there are no surviving nodes to migrate to.
 
 - Auto-detected at startup via `ha-manager status`
-- Each HA-managed resource disabled individually: `ha-manager set <sid> --state disabled`
+- Each HA-managed resource released individually: `ha-manager set <sid> --state ignored`
 - Phase 1: scoped to k8s VMIDs only
-- Phase 2+: all HA-managed resources disabled regardless of VM type
+- Phase 2+: all HA-managed resources released regardless of VM type
+
+**Why `ignored`, not `disabled`:** for `disabled` the CRM *stops* the resource. Releasing with `disabled` before the drain would shut down every HA VM (e.g. the router/DNS VM the k8s API path depends on) before a single pod is evicted. `ignored` removes the resource from the CRM's manager status without touching it; the VM keeps running until styx's own dispatch stops it, and the CRM won't restart it.
+
+**No wait at release time:** `ha-manager set` returns immediately and the CRM drops the service within one cycle (~10s). Styx confirms this (the service's `/cluster/ha/status/current` entry loses `crm_state`) right before dispatching VM shutdowns — by then the drain has normally covered the CRM cycle, so the check costs one `pvesh` call.
 
 #### Partial shutdown (`--hosts`)
 
@@ -432,7 +437,7 @@ For partial shutdowns, styx classifies each HA-managed VM on the target hosts as
 
 The partial-shutdown flow:
 
-1. **Disable HA** for non-relocatable VMs (`ha-manager set <sid> --state disabled`) — removes them from CRM so no migration is attempted
+1. **Release HA** for non-relocatable VMs (`ha-manager set <sid> --state ignored`) and wait until the CRM has dropped them — so node maintenance doesn't try to migrate them
 2. **Enable node maintenance** on each target host (`ha-manager crm-command node-maintenance enable <node>`) — CRM live-migrates all remaining (relocatable) HA services off the node, choosing targets via the CRS algorithm
 3. **Wait for migrations to complete** — poll until no HA services remain on target hosts (timeout: `timeout_drain × maintenance_multiplier`)
 4. **Refresh VM topology** — re-fetch `/cluster/resources` so dispatch targets the correct (post-migration) host assignments
@@ -442,7 +447,7 @@ If migrations time out, `policy.on_warning()` fires — in maintenance mode this
 #### Common
 
 - Both `ha-manager` and `pvesh` require quorum, but run at startup before any host is powered off
-- HA disable happens before cordon to close the window where HA could migrate a VM onto the target host between preflight and disable
+- HA release happens before cordon to close the window where HA could migrate a VM onto the target host between preflight and release
 
 ### Quorum Considerations
 
@@ -451,7 +456,7 @@ Proxmox cluster quorum (corosync/pmxcfs) requires a majority of nodes. As hosts 
 **Quorum-dependent** (run at startup only):
 - `pvesh` — host discovery, VM discovery
 - `pveceph` — Ceph detection
-- `ha-manager` — HA disable
+- `ha-manager` — HA release
 - `qm` — NOT used (replaced by `styx-vm-shutdown`)
 
 **Quorum-independent** (work throughout):
@@ -471,7 +476,7 @@ The script is safe to re-run (e.g., `--phase 1` followed by `--phase 3`):
 | `kubectl get nodes` | API unreachable (VMs off) | Skip drain, go straight to VM shutdown |
 | `kubectl drain` | Node already cordoned, no pods | Succeeds (no-op) |
 | `styx-vm-shutdown` | VM already stopped (no PID) | Exits 0 |
-| `ha-manager set --state disabled` | Already disabled | No-op |
+| `ha-manager set --state ignored` | Already ignored | No-op |
 | `ceph osd set noout` / `ceph osd add-noout osd.N` | Already set | No-op |
 | `ssh root@<ip> poweroff` | Host already off | SSH refused, logged, continues |
 
@@ -482,7 +487,7 @@ Many operations run in parallel, so the worst-case formula is simpler than the n
 #### Phase structure
 
 ```
-sequential:  HA disable → drain → VM shutdown wait → polling
+sequential:  HA release → drain → HA release confirmed → VM shutdown wait → polling
 parallel:    all k8s drains run concurrently
              all VM shutdowns run concurrently (fire-and-forget)
              Track A (k8s) and Track B (non-k8s) run concurrently
@@ -492,7 +497,7 @@ parallel:    all k8s drains run concurrently
 
 | Step | Duration | Notes |
 |------|----------|-------|
-| HA disable | N × 30s | Sequential per resource; usually completes in < 5s each |
+| HA release | ≤ 30s, once | Set without waiting; confirmed before dispatch, normally already done |
 | k8s drain | `timeout_drain` | All nodes drain in parallel; single shared timeout |
 | VM shutdown + escalation | `timeout_vm` + 15s | ACPI wait + SIGTERM 10s + SIGKILL 5s |
 | Polling detection | `poll_interval` | One cycle to detect completion |
@@ -501,7 +506,7 @@ parallel:    all k8s drains run concurrently
 worst_case = timeout_drain + timeout_vm + 15 + poll_interval
 ```
 
-With defaults (drain=120, vm=120, poll=10): **4m 25s** (excluding HA disable, which is topology-dependent).
+With defaults (drain=120, vm=120, poll=10): **4m 25s** (plus at most 30s if the CRM has not released HA resources by dispatch).
 
 Without Kubernetes (no drain phase): `timeout_vm + 15 + poll_interval` = **2m 25s**.
 
@@ -534,7 +539,7 @@ This gives the admin a concrete number to compare against their UPS battery esti
 | `maintenance_multiplier` | 10 | `[timeouts] maintenance_multiplier` | Multiplier applied to operational timeouts in maintenance/dry-run mode |
 | SIGTERM grace | 10s | No | Grace period after SIGTERM before SIGKILL |
 | SIGKILL grace | 5s | No | Final check after SIGKILL |
-| HA transition | 30s | No | Wait for `ha-manager set --state disabled` per resource |
+| HA transition | 30s | No | Max wait (all resources together) for the CRM to drop `ignored` resources |
 | Poll interval | 10s | `STYX_POLL_INTERVAL` env var | Polling loop sleep between VM status checks |
 | K8s drain poll | 2s | No | Sleep between pod eviction checks during drain |
 | K8s API timeout | 10s | No | HTTP timeout for Kubernetes API calls |
@@ -706,8 +711,8 @@ ops.cordon_node(node)                          # kubectl cordon via K8sClient
 ops.drain_node(node, timeout) -> bool          # kubectl drain via K8sClient
 ops.list_volume_attachments_for_node(node)     # CSI VolumeAttachment check post-drain
 ops.get_ha_started_sids()                      # ha-manager status -> started SIDs
-ops.disable_ha_sid(sid)                        # ha-manager set --state disabled
-ops.wait_ha_disabled(sid, timeout) -> bool     # poll until disabled or timeout
+ops.release_ha_sid(sid)                        # ha-manager set --state ignored
+ops.wait_ha_released(sids, timeout) -> list    # poll until CRM drops them; returns still-managed SIDs
 ops.set_ceph_flags(flags)                      # ceph osd set <flag> for each flag
 ops.poweroff_host(host)                        # ssh: collect shutdown logs then poweroff
 ops.poweroff_self()                            # poweroff (orchestrator self)
@@ -883,7 +888,7 @@ Considered adding a third discovery mechanism: tag Proxmox VMs with `styx.k8s-wo
 
 Reviewed [proxmox-guardian](https://github.com/Guilhem-Bonnet/proxmox-guardian) as prior art. Outcomes:
 - **Per-action error policy**: covered by the `Policy` class pattern — `emergency` warns and continues, `maintenance` prompts. No additional per-operation configuration matrix needed.
-- **Persistent state**: unnecessary as long as all actions remain idempotent (they do). **This is a critical design invariant**: cordon, drain, HA disable, Ceph flag setting, VM shutdown, and host poweroff are all safe to run multiple times. This property enables the trigger script (`scripts/trigger.sh`) to try multiple nodes without risk — if a connection drops mid-run and a second node picks up the trigger, both runs can proceed safely. New operations added to styx must preserve this invariant.
+- **Persistent state**: unnecessary as long as all actions remain idempotent (they do). **This is a critical design invariant**: cordon, drain, HA release, Ceph flag setting, VM shutdown, and host poweroff are all safe to run multiple times. This property enables the trigger script (`scripts/trigger.sh`) to try multiple nodes without risk — if a connection drops mid-run and a second node picks up the trigger, both runs can proceed safely. New operations added to styx must preserve this invariant.
 - **Startup/recovery automation**: manual procedure with clear documentation is the right trade-off; automating recovery risks acting on incomplete state.
 - **Tag-based VM discovery**: considered and rejected (see above).
 

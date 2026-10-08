@@ -1,4 +1,4 @@
-"""Unit tests for orchestrate.run_polling_loop edge cases, _disable_ha,
+"""Unit tests for orchestrate.run_polling_loop edge cases, _release_ha,
 _log_revert_summary, and _log_startup_checklist."""
 
 import io
@@ -12,7 +12,8 @@ from pathlib import Path
 
 from styx.discover import ClusterTopology
 from styx.orchestrate import (
-    run_polling_loop, _disable_ha, _log_revert_summary, _log_startup_checklist,
+    run_polling_loop, _release_ha, _wait_ha_released,
+    _log_revert_summary, _log_startup_checklist,
 )
 from styx.policy import Policy, DryRunPolicy
 
@@ -181,8 +182,8 @@ class TestPollingLoopOrchestratorVMs(unittest.TestCase):
                          'Host was powered off while VMs were still running')
 
 
-class TestDisableHA(unittest.TestCase):
-    """Tests for _disable_ha with various HA resource states."""
+class TestReleaseHA(unittest.TestCase):
+    """Tests for _release_ha with various HA resource states."""
 
     def setUp(self):
         self._tmp = tempfile.mkdtemp()
@@ -190,23 +191,22 @@ class TestDisableHA(unittest.TestCase):
     def tearDown(self):
         kill_all_fake_vms(self._tmp)
 
-    def _make_ops(self, ha_sids, wait_result=True):
+    def _make_ops(self, ha_sids):
         vm_host = {'211': 'pve2', '201': 'pve3'}
         ops = FakeOperations(self._tmp, vm_host)
         ops.get_ha_started_sids = lambda: ha_sids
-        ops.wait_ha_disabled = lambda sid, timeout=30: wait_result
         return ops
 
-    def test_disables_matching_sids_scope_all(self):
+    def test_releases_matching_sids_scope_all(self):
         ops = self._make_ops(['vm:211', 'vm:201'])
         topo = _topo(
             vm_host={'211': 'pve2', '201': 'pve3'},
             vm_name={'211': 'w1', '201': 'cp1'},
             vm_type={'211': 'qemu', '201': 'qemu'},
         )
-        _disable_ha(topo, ops, Policy(), 'all')
-        self.assertIn('DISABLE_HA vm:211', ops.ha_log)
-        self.assertIn('DISABLE_HA vm:201', ops.ha_log)
+        _release_ha(topo, ops, Policy(), 'all')
+        self.assertIn('RELEASE_HA vm:211', ops.ha_log)
+        self.assertIn('RELEASE_HA vm:201', ops.ha_log)
 
     def test_skips_sids_not_in_scope(self):
         ops = self._make_ops(['vm:999'])
@@ -215,7 +215,7 @@ class TestDisableHA(unittest.TestCase):
             vm_name={'211': 'w1'},
             vm_type={'211': 'qemu'},
         )
-        _disable_ha(topo, ops, Policy(), 'all')
+        _release_ha(topo, ops, Policy(), 'all')
         self.assertEqual(ops.ha_log, [])
 
     def test_scope_k8s_only_targets_k8s_vms(self):
@@ -227,31 +227,43 @@ class TestDisableHA(unittest.TestCase):
             k8s_workers=['211'],
             k8s_enabled=True,
         )
-        _disable_ha(topo, ops, Policy(), 'k8s')
-        self.assertIn('DISABLE_HA vm:211', ops.ha_log)
-        disabled_vms = [s.split()[-1] for s in ops.ha_log]
-        self.assertNotIn('vm:101', disabled_vms)
+        _release_ha(topo, ops, Policy(), 'k8s')
+        self.assertIn('RELEASE_HA vm:211', ops.ha_log)
+        released_vms = [s.split()[-1] for s in ops.ha_log]
+        self.assertNotIn('vm:101', released_vms)
 
-    def test_dry_run_does_not_disable(self):
+    def test_dry_run_does_not_release(self):
         ops = self._make_ops(['vm:211'])
         topo = _topo(
             vm_host={'211': 'pve2'},
             vm_name={'211': 'w1'},
             vm_type={'211': 'qemu'},
         )
-        _disable_ha(topo, ops, DryRunPolicy(), 'all')
+        _release_ha(topo, ops, DryRunPolicy(), 'all')
         self.assertEqual(ops.ha_log, [])
 
-    def test_wait_timeout_triggers_warning(self):
-        """When wait_ha_disabled returns False, a warning is logged."""
-        ops = self._make_ops(['vm:211'], wait_result=False)
+    def test_returns_released_sids_without_waiting(self):
+        """Release must not block on the CRM: the wait happens before dispatch."""
+        ops = self._make_ops(['vm:211'])
         topo = _topo(
             vm_host={'211': 'pve2'},
             vm_name={'211': 'w1'},
             vm_type={'211': 'qemu'},
         )
-        _disable_ha(topo, ops, Policy(), 'all')
-        self.assertIn('DISABLE_HA vm:211', ops.ha_log)
+        self.assertEqual(_release_ha(topo, ops, Policy(), 'all'), ['vm:211'])
+        self.assertEqual(ops.ha_log, ['RELEASE_HA vm:211'])
+
+    def test_failed_release_not_returned(self):
+        ops = self._make_ops(['vm:211'])
+        def boom(sid):
+            raise RuntimeError('ha-manager failed')
+        ops.release_ha_sid = boom
+        topo = _topo(
+            vm_host={'211': 'pve2'},
+            vm_name={'211': 'w1'},
+            vm_type={'211': 'qemu'},
+        )
+        self.assertEqual(_release_ha(topo, ops, Policy(), 'all'), [])
 
     def test_sid_without_colon_matched_directly(self):
         """SID like '211' (no vm: prefix) should still match vm_host keys."""
@@ -261,8 +273,40 @@ class TestDisableHA(unittest.TestCase):
             vm_name={'211': 'w1'},
             vm_type={'211': 'qemu'},
         )
-        _disable_ha(topo, ops, Policy(), 'all')
-        self.assertIn('DISABLE_HA 211', ops.ha_log)
+        _release_ha(topo, ops, Policy(), 'all')
+        self.assertIn('RELEASE_HA 211', ops.ha_log)
+
+
+class TestWaitHAReleased(unittest.TestCase):
+    """Tests for _wait_ha_released."""
+
+    def _ops(self, pending):
+        ops = FakeOperations(tempfile.mkdtemp(), {})
+        ops.wait_ha_released = lambda sids, timeout=30: pending
+        return ops
+
+    def test_pending_sids_warn(self):
+        warnings = []
+        policy = Policy()
+        policy.on_warning = warnings.append
+        _wait_ha_released(self._ops(['vm:100']), policy, ['vm:100', 'vm:104'])
+        self.assertEqual(len(warnings), 1)
+        self.assertIn('vm:100', warnings[0])
+
+    def test_all_released_no_warning(self):
+        warnings = []
+        policy = Policy()
+        policy.on_warning = warnings.append
+        _wait_ha_released(self._ops([]), policy, ['vm:100'])
+        self.assertEqual(warnings, [])
+
+    def test_dry_run_and_empty_skip_wait(self):
+        calls = []
+        ops = FakeOperations(tempfile.mkdtemp(), {})
+        ops.wait_ha_released = lambda sids, timeout=30: calls.append(sids) or []
+        _wait_ha_released(ops, DryRunPolicy(), ['vm:100'])
+        _wait_ha_released(ops, Policy(), [])
+        self.assertEqual(calls, [])
 
 
 class TestLogRevertSummary(unittest.TestCase):
@@ -350,6 +394,13 @@ class TestLogStartupChecklist(unittest.TestCase):
         output = _capture_log(lambda: _log_startup_checklist(topo, []))
         self.assertIn('worker1', output)
         self.assertIn('uncordon', output)
+
+    def test_released_ha_sids_in_checklist(self):
+        topo = _topo()
+        output = _capture_log(lambda: _log_startup_checklist(
+            topo, [], released_sids=['vm:100', 'vm:104']))
+        self.assertIn('ha-manager set vm:100 --state started', output)
+        self.assertIn('ha-manager set vm:104 --state started', output)
 
 
 class TestPollingLoopTimeout(unittest.TestCase):

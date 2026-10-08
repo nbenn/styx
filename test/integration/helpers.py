@@ -108,7 +108,7 @@ class FakeOperations:
         return []
 
     def get_ha_started_sids(self):
-        return []
+        return getattr(self, '_ha_started', [])
 
     def get_ha_resources(self):
         return getattr(self, '_ha_resources', [])
@@ -123,11 +123,18 @@ class FakeOperations:
         self.ha_log.append(f'WAIT_MIGRATIONS {node}')
         return True
 
-    def disable_ha_sid(self, sid):
-        self.ha_log.append(f'DISABLE_HA {sid}')
+    def release_ha_sid(self, sid):
+        entry = f'RELEASE_HA {sid}'
+        with self._lock:
+            self.ha_log.append(entry)
+            self.sequence_log.append((next(self._seq), entry))
 
-    def wait_ha_disabled(self, sid, timeout=30):
-        return True
+    def wait_ha_released(self, sids, timeout=30):
+        entry = f'WAIT_HA_RELEASED {" ".join(sids)}'
+        with self._lock:
+            self.ha_log.append(entry)
+            self.sequence_log.append((next(self._seq), entry))
+        return []
 
     def set_ceph_flags(self, flags):
         with self._lock:

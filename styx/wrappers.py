@@ -10,9 +10,9 @@ import time
 
 from styx.policy import log
 
-# How long to wait for an HA resource to transition to 'disabled' after
-# calling ha-manager set. Always times out with a warning rather than
-# stalling the sequence.
+# How long to wait for the CRM to release HA resources after setting them
+# to 'ignored' (normally one CRM cycle, ~10s). Always times out with a
+# warning rather than stalling the sequence.
 _HA_TRANSITION_TIMEOUT = 30
 
 
@@ -113,6 +113,18 @@ def _parse_ha_services_on_nodes(data, target_nodes):
         and entry.get('state') == 'started'
         and entry.get('node') in target_nodes
     ]
+
+
+def _parse_ha_unreleased(data, sids):
+    """Return the subset of sids the CRM still manages.
+
+    The CRM drops a service from its manager status once it sees the
+    'ignored' request; /cluster/ha/status/current then lists it without
+    'crm_state' (or not at all).
+    """
+    managed = {entry['sid'] for entry in data
+               if entry.get('type') == 'service' and 'crm_state' in entry}
+    return [sid for sid in sids if sid in managed]
 
 
 def _parse_running_vmids(output):
@@ -280,29 +292,37 @@ class Operations:
             time.sleep(5)
         return False
 
-    def disable_ha_sid(self, sid):
+    def release_ha_sid(self, sid):
+        """Take sid out of HA control without stopping it.
+
+        'ignored', not 'disabled': for 'disabled' the CRM stops the VM.
+        """
         subprocess.run(
-            ['ha-manager', 'set', sid, '--state', 'disabled'],
+            ['ha-manager', 'set', sid, '--state', 'ignored'],
             check=True, timeout=10,
         )
 
-    def wait_ha_disabled(self, sid, timeout=_HA_TRANSITION_TIMEOUT):
-        """Wait for HA resource to reach 'disabled' state. Returns True on success."""
+    def wait_ha_released(self, sids, timeout=_HA_TRANSITION_TIMEOUT):
+        """Poll until the CRM no longer manages any of sids.
+
+        Returns the SIDs still managed at timeout (empty list = success).
+        """
+        pending = list(sids)
         deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
+        while pending:
             try:
                 r = subprocess.run(
                     ['pvesh', 'get', '/cluster/ha/status/current',
                      '--output-format', 'json'],
                     capture_output=True, text=True, check=True, timeout=10,
                 )
-                for entry in json.loads(r.stdout):
-                    if entry.get('sid') == sid and entry.get('state') == 'disabled':
-                        return True
+                pending = _parse_ha_unreleased(json.loads(r.stdout), pending)
             except Exception:
                 pass
+            if not pending or time.monotonic() >= deadline:
+                break
             time.sleep(2)
-        return False
+        return pending
 
     # ── Ceph ──────────────────────────────────────────────────────────────────
 

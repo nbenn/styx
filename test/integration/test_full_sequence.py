@@ -186,9 +186,11 @@ class TestMainPhaseControl(unittest.TestCase):
         kill_all_fake_vms(self._tmp)
         os.unlink(self._conf.name)
 
-    def _run(self, phase, ceph=False, hosts=None):
+    def _run(self, phase, ceph=False, hosts=None, ha_started=None):
         topo = _default_topo(self._tmp, ceph=ceph)
         ops  = FakeOperations(self._tmp, _VM_HOST)
+        if ha_started:
+            ops._ha_started = ha_started
 
         def fake_discover(config):
             return topo
@@ -282,6 +284,18 @@ class TestMainPhaseControl(unittest.TestCase):
         self.assertTrue(len(drain_seqs) > 0)
         self.assertTrue(len(dispatch_seqs) > 0)
         self.assertGreater(min(dispatch_seqs), max(drain_seqs))
+
+    def test_ha_released_before_drain_confirmed_before_dispatch(self):
+        """HA VMs are released (not stopped) before the drain, and the
+        release is confirmed only after it, right before dispatch."""
+        ops = self._run(3, ha_started=['vm:101'])
+        seq = {a: s for s, a in ops.sequence_log}
+        drain_seqs = [s for s, a in ops.sequence_log if a.startswith('DRAIN')]
+        dispatch_seqs = [s for s, a in ops.sequence_log
+                         if a.startswith('LOCAL_SHUTDOWN')]
+        self.assertLess(seq['RELEASE_HA vm:101'], min(drain_seqs))
+        self.assertGreater(seq['WAIT_HA_RELEASED vm:101'], max(drain_seqs))
+        self.assertLess(seq['WAIT_HA_RELEASED vm:101'], min(dispatch_seqs))
 
     def test_ceph_flags_before_dispatch(self):
         """Ceph flags must be set before LOCAL_SHUTDOWN is dispatched."""
@@ -426,9 +440,9 @@ class TestSmartHA(unittest.TestCase):
         disabled; anynode VMs on target hosts get migrated, not disabled."""
         ops = self._run(['pve1', 'pve2'])
         # vm:100 is pinned to {pve1,pve2} — both shutting down → HA disabled
-        self.assertIn('DISABLE_HA vm:100', ops.ha_log)
+        self.assertIn('RELEASE_HA vm:100', ops.ha_log)
         # vm:110 is anynode (non-restricted) on pve2 → migrated, not disabled
-        self.assertNotIn('DISABLE_HA vm:110', ops.ha_log)
+        self.assertNotIn('RELEASE_HA vm:110', ops.ha_log)
 
     def test_partial_maintenance_enables_node_maintenance(self):
         """Node maintenance should be enabled on target hosts for migration."""
@@ -444,7 +458,7 @@ class TestSmartHA(unittest.TestCase):
     def test_surviving_host_vms_not_affected(self):
         """vm:104 on pve3 (not in shutdown set) should not be touched by HA ops."""
         ops = self._run(['pve1', 'pve2'])
-        self.assertNotIn('DISABLE_HA vm:104', ops.ha_log)
+        self.assertNotIn('RELEASE_HA vm:104', ops.ha_log)
         self.assertNotIn('NODE_MAINTENANCE pve3', ops.ha_log)
 
     def test_emergency_mode_skips_smart_ha(self):
@@ -459,7 +473,7 @@ class TestSmartHA(unittest.TestCase):
         """Shutting down only pve2: pinned group has pve1 surviving → relocatable."""
         ops = self._run(['pve2'])
         # vm:100 pinned to {pve1,pve2}, pve1 survives → should NOT be disabled
-        self.assertNotIn('DISABLE_HA vm:100', ops.ha_log)
+        self.assertNotIn('RELEASE_HA vm:100', ops.ha_log)
         # Node maintenance should be enabled for migration
         self.assertIn('NODE_MAINTENANCE pve2', ops.ha_log)
 
@@ -467,7 +481,7 @@ class TestSmartHA(unittest.TestCase):
         """HA disable must come before node maintenance."""
         ops = self._run(['pve1', 'pve2'])
         disable_indices = [i for i, e in enumerate(ops.ha_log)
-                           if e.startswith('DISABLE_HA')]
+                           if e.startswith('RELEASE_HA')]
         maintenance_indices = [i for i, e in enumerate(ops.ha_log)
                                if e.startswith('NODE_MAINTENANCE')]
         if disable_indices and maintenance_indices:

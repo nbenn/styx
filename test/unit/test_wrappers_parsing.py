@@ -4,12 +4,15 @@ New HA parsing tests (_parse_ha_resources, _parse_ha_groups,
 _parse_ha_services_on_nodes) are in test_ha_smart.py.
 """
 
+import json
 import sys
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from styx.wrappers import (
-    _parse_ha_status, _parse_running_vmids, _parse_osd_tree,
+    _parse_ha_status, _parse_ha_unreleased, _parse_running_vmids,
+    _parse_osd_tree,
     _styx_cmd, _local_pyz,
     _VM_LOG, Operations,
 )
@@ -114,6 +117,31 @@ class TestParseHaStatus(unittest.TestCase):
 
 
 # ── _parse_running_vmids ──────────────────────────────────────────────────────
+
+class TestParseHaUnreleased(unittest.TestCase):
+    """Released = CRM dropped the service: no crm_state (or no entry)."""
+
+    _FIXTURE = Path(__file__).parent.parent / 'fixtures' / 'pvesh' / 'ha_status_current.json'
+
+    def test_managed_services_unreleased(self):
+        data = json.loads(self._FIXTURE.read_text())
+        self.assertEqual(_parse_ha_unreleased(data, ['vm:100', 'vm:104']),
+                         ['vm:100', 'vm:104'])
+
+    def test_ignored_without_crm_state_released(self):
+        data = [{'type': 'service', 'sid': 'vm:100', 'state': 'ignored',
+                 'request_state': 'ignored'}]
+        self.assertEqual(_parse_ha_unreleased(data, ['vm:100']), [])
+
+    def test_ignored_requested_but_crm_not_yet_processed(self):
+        # Config already says ignored, CRM still tracks it → not released yet
+        data = [{'type': 'service', 'sid': 'vm:100', 'state': 'ignored',
+                 'request_state': 'ignored', 'crm_state': 'started'}]
+        self.assertEqual(_parse_ha_unreleased(data, ['vm:100']), ['vm:100'])
+
+    def test_missing_entry_released(self):
+        self.assertEqual(_parse_ha_unreleased([], ['vm:100']), [])
+
 
 class TestParseRunningVmids(unittest.TestCase):
 

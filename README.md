@@ -15,7 +15,7 @@ Styx splits the shutdown into a **coordinated phase** (requires cluster APIs) an
 
 | Phase | What happens |
 |-------|-------------|
-| Coordinated | Cordon k8s nodes, disable HA, drain all k8s nodes in parallel |
+| Coordinated | Release HA (VMs keep running), cordon k8s nodes, drain all k8s nodes in parallel |
 | Independent | Set Ceph OSD flags, dispatch `local-shutdown` to each host (one SSH per peer), poll + power off |
 
 After the coordinated phase, each peer shuts down its own VMs via QMP and has an autonomous poweroff deadline as a leader-dead fallback — if the orchestrator dies, peers power themselves off after `timeout_vm + 15s`. VM shutdowns bypass `qm shutdown` and the Proxmox API, so the script keeps working even after cluster quorum is lost.
@@ -276,7 +276,7 @@ ceph status   # look for "HEALTH_OK" or "HEALTH_WARN" with only expected warning
 
 **3. Re-enable HA**
 
-Styx disabled HA for managed VMs before shutting them down. Re-enable each service ID:
+Styx took HA-managed VMs out of HA control (`--state ignored`) before shutting them down, so that HA neither stopped them early nor restarted them. The startup checklist lists the SIDs. Re-enable each service ID:
 
 ```bash
 ha-manager set <sid> --state started   # e.g. ha-manager set vm:201 --state started
@@ -285,7 +285,7 @@ ha-manager set <sid> --state started   # e.g. ha-manager set vm:201 --state star
 To find which SIDs need re-enabling:
 
 ```bash
-ha-manager status   # look for services in "disabled" state
+ha-manager status   # look for services in "ignored" state
 ```
 
 If HA is configured for your VMs, this step also starts them — skip to step 5.
