@@ -4,6 +4,7 @@ Inject a subclass or mock in tests to avoid real SSH / CLI calls.
 """
 
 import json
+import os
 import subprocess
 import sys
 import time
@@ -23,9 +24,16 @@ _RELEASE_MOUNTS_LOG   = '/var/log/styx-release-mounts.log'
 
 
 def _local_pyz():
-    """Return sys.argv[0] if running as a zipapp, else None."""
+    """Return the absolute path of the running zipapp, else None.
+
+    Absolute (symlinks resolved): the path is sent to peers, whose working
+    directory differs — './styx.pyz' would not exist there.
+    """
     argv0 = sys.argv[0] if sys.argv else ''
-    return argv0 if argv0.endswith('.pyz') else None
+    if not argv0:
+        return None
+    path = os.path.realpath(argv0)
+    return path if path.endswith('.pyz') else None
 
 
 def _styx_cmd():

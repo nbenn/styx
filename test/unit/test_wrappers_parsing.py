@@ -5,7 +5,9 @@ _parse_ha_services_on_nodes) are in test_ha_smart.py.
 """
 
 import json
+import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -276,12 +278,32 @@ class TestParseOsdTree(unittest.TestCase):
 class TestStyxCmd(unittest.TestCase):
 
     def test_pyz_path_used_when_running_as_zipapp(self):
-        with patch.object(sys, 'argv', ['/var/lib/vz/snippets/styx.pyz']):
-            self.assertEqual(_styx_cmd(), 'python3 /var/lib/vz/snippets/styx.pyz')
+        with patch.object(sys, 'argv', ['/opt/styx/styx.pyz']):
+            self.assertEqual(_styx_cmd(), 'python3 /opt/styx/styx.pyz')
 
-    def test_relative_pyz_path_preserved(self):
-        with patch.object(sys, 'argv', ['styx.pyz']):
-            self.assertEqual(_styx_cmd(), 'python3 styx.pyz')
+    def test_relative_pyz_path_made_absolute(self):
+        """'./styx.pyz' run from /opt/styx must not reach peers as a relative
+        path — their working directory differs."""
+        with tempfile.TemporaryDirectory() as d:
+            pyz = os.path.join(d, 'styx.pyz')
+            open(pyz, 'w').close()
+            cwd = os.getcwd()
+            os.chdir(d)
+            try:
+                with patch.object(sys, 'argv', ['./styx.pyz']):
+                    self.assertEqual(_local_pyz(), os.path.realpath(pyz))
+                    self.assertEqual(_styx_cmd(), f'python3 {os.path.realpath(pyz)}')
+            finally:
+                os.chdir(cwd)
+
+    def test_symlink_resolved_to_pyz(self):
+        with tempfile.TemporaryDirectory() as d:
+            pyz = os.path.join(d, 'styx.pyz')
+            open(pyz, 'w').close()
+            link = os.path.join(d, 'styx')
+            os.symlink(pyz, link)
+            with patch.object(sys, 'argv', [link]):
+                self.assertEqual(_local_pyz(), os.path.realpath(pyz))
 
     def test_module_invocation_for_source_install(self):
         with patch.object(sys, 'argv', ['/opt/styx/styx/__main__.py']):

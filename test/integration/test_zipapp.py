@@ -98,12 +98,14 @@ class TestZipappSmoke(unittest.TestCase):
             from styx.k8s import K8sClient        # the one lazy import in real code
             from styx.orchestrate import discover, preflight
 
+            expected_cmd = 'python3 ' + os.path.realpath({pyz!r})
+
             # Simulate CephFS going away.
             os.unlink({pyz!r})
             assert not os.path.exists({pyz!r})
 
             # Every function must still work from in-memory code objects.
-            assert _styx_cmd() == f'python3 {pyz}', _styx_cmd()
+            assert _styx_cmd() == expected_cmd, _styx_cmd()
             assert other_vmids(['101', '201', '211'], ['211'], []) == ['101', '201']
             assert should_disable_ha(3) is True
             assert should_run_polling(3) is True
