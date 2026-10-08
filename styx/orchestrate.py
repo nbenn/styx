@@ -381,38 +381,38 @@ def _release_ha(topo, ops, policy, scope):
     return _release_ha_sids(ops, policy, sids)
 
 
+def _ha_placement(ops, resources):
+    """Return {sid: nodes it may run on} for resources restricted in placement.
+
+    PVE 8: restricted HA groups. PVE 9 migrated groups to node-affinity
+    rules and the groups API errors out; then the rules are used.
+    Resources that may run anywhere are absent.
+    """
+    try:
+        groups = ops.get_ha_groups()
+    except Exception:
+        return ops.get_ha_rule_placement()
+    return {res['sid']: groups[res['group']]['nodes'] for res in resources
+            if res.get('group') in groups and groups[res['group']]['restricted']}
+
+
 def _classify_ha_relocatable(ops, shutdown_hosts):
     """Classify HA VMs on shutdown_hosts as relocatable or non-relocatable.
 
     Returns (relocatable_sids: list[str], disable_sids: list[str]).
 
-    A VM is relocatable if it has no group, its group is not restricted,
-    or its restricted group has at least one member node NOT being shut down.
+    A VM is relocatable unless its placement is restricted (restricted
+    group, or strict node-affinity rule) to nodes that are all being shut
+    down. The caller filters the result to SIDs on the target hosts.
     """
     resources = ops.get_ha_resources()
-    groups = ops.get_ha_groups()
+    placement = _ha_placement(ops, resources)
 
     relocatable = []
     disable = []
     for res in resources:
-        # Only consider VMs whose VMID is on a target host.
-        # We don't know the VM→host mapping here; the caller filters by
-        # SID against topo.vm_host. But we receive all started HA resources
-        # and classify them all — the caller uses the SID to filter.
         sid = res['sid']
-        group_name = res.get('group', '')
-        if not group_name or group_name not in groups:
-            # No group or unknown group → can run anywhere → relocatable
-            relocatable.append(sid)
-            continue
-        group = groups[group_name]
-        if not group['restricted']:
-            # Non-restricted group → can run anywhere → relocatable
-            relocatable.append(sid)
-            continue
-        # Restricted group — check if any member node survives
-        surviving = group['nodes'] - shutdown_hosts
-        if surviving:
+        if sid not in placement or placement[sid] - shutdown_hosts:
             relocatable.append(sid)
         else:
             disable.append(sid)

@@ -85,19 +85,46 @@ def _parse_ha_resources(data):
     ]
 
 
+def _parse_node_list(raw):
+    """'pve1:2,pve2' → {'pve1', 'pve2'} (priority suffixes dropped)."""
+    return {n.split(':', 1)[0].strip() for n in raw.split(',') if n.strip()}
+
+
 def _parse_ha_groups(data):
     """Parse /cluster/ha/groups JSON into {name: {nodes: set, restricted: bool}}.
 
-    Proxmox returns nodes as a comma-separated string and restricted as 0/1.
+    Proxmox returns nodes as a comma-separated string (optionally with
+    ':priority' suffixes) and restricted as 0/1.
     """
     return {
         entry['group']: {
-            'nodes': set(entry.get('nodes', '').split(',')),
+            'nodes': _parse_node_list(entry.get('nodes', '')),
             'restricted': bool(entry.get('restricted', 0)),
         }
         for entry in data
         if 'group' in entry
     }
+
+
+def _parse_ha_rules(data, all_nodes):
+    """Parse /cluster/ha/rules JSON (PVE 9) into {sid: allowed node set}.
+
+    Only enabled, strict node-affinity rules restrict placement: positive
+    rules limit a resource to their nodes, negative rules exclude theirs.
+    Non-strict rules are preferences, the resource may run anywhere.
+    Resources without a restricting rule are absent from the result.
+    """
+    allowed = {}
+    for rule in data:
+        if (rule.get('type') != 'node-affinity' or rule.get('disable')
+                or not rule.get('strict')):
+            continue
+        nodes = _parse_node_list(rule.get('nodes', ''))
+        if rule.get('affinity', 'positive') == 'negative':
+            nodes = set(all_nodes) - nodes
+        for sid in (s.strip() for s in rule.get('resources', '').split(',') if s.strip()):
+            allowed[sid] = allowed.get(sid, set(all_nodes)) & nodes
+    return allowed
 
 
 def _parse_ha_services_on_nodes(data, target_nodes):
@@ -264,6 +291,18 @@ class Operations:
             capture_output=True, text=True, check=True, timeout=10,
         )
         return _parse_ha_groups(json.loads(r.stdout))
+
+    def get_ha_rule_placement(self):
+        """Return {sid: allowed nodes} from /cluster/ha/rules (PVE 9)."""
+        def _get(path):
+            r = subprocess.run(
+                ['pvesh', 'get', path, '--output-format', 'json'],
+                capture_output=True, text=True, check=True, timeout=10,
+            )
+            return json.loads(r.stdout)
+        all_nodes = [e['name'] for e in _get('/cluster/status')
+                     if e.get('type') == 'node']
+        return _parse_ha_rules(_get('/cluster/ha/rules'), all_nodes)
 
     def enable_node_maintenance(self, node):
         """Enable HA maintenance mode on a node."""

@@ -7,6 +7,7 @@ from unittest.mock import patch, MagicMock
 
 from styx.wrappers import (
     _parse_ha_resources, _parse_ha_groups, _parse_ha_services_on_nodes,
+    _parse_ha_rules,
 )
 from styx.orchestrate import _classify_ha_relocatable
 
@@ -195,6 +196,79 @@ class TestClassifyHaRelocatable(unittest.TestCase):
         # pinned={pve1,pve2}, pve1 survives → relocatable
         self.assertIn('vm:100', relocatable)
         self.assertEqual(disable, [])
+
+
+    def test_group_node_priorities_stripped(self):
+        groups = _parse_ha_groups([{'group': 'g', 'nodes': 'pve1:2,pve2', 'restricted': 1}])
+        self.assertEqual(groups['g']['nodes'], {'pve1', 'pve2'})
+
+
+# ── PVE 9: HA rules ──────────────────────────────────────────────────────────
+
+_PVE9_NODES = ['aegle', 'hesperia', 'erythia', 'arethusa', 'medusa']
+
+
+class TestParseHaRules(unittest.TestCase):
+
+    def test_fixture_only_strict_rule_restricts(self):
+        self.assertEqual(_parse_ha_rules(_load('ha_rules.json'), _PVE9_NODES),
+                         {'vm:100': {'aegle', 'hesperia'}})
+
+    def test_priorities_stripped(self):
+        rules = [{'type': 'node-affinity', 'strict': 1, 'nodes': 'aegle:2,medusa:1',
+                  'resources': 'vm:1'}]
+        self.assertEqual(_parse_ha_rules(rules, _PVE9_NODES), {'vm:1': {'aegle', 'medusa'}})
+
+    def test_negative_strict_excludes_nodes(self):
+        rules = [{'type': 'node-affinity', 'strict': 1, 'affinity': 'negative',
+                  'nodes': 'aegle,hesperia', 'resources': 'vm:1'}]
+        self.assertEqual(_parse_ha_rules(rules, _PVE9_NODES),
+                         {'vm:1': {'erythia', 'arethusa', 'medusa'}})
+
+    def test_multiple_strict_rules_intersect(self):
+        rules = [
+            {'type': 'node-affinity', 'strict': 1, 'nodes': 'aegle,hesperia,medusa',
+             'resources': 'vm:1'},
+            {'type': 'node-affinity', 'strict': 1, 'affinity': 'negative',
+             'nodes': 'aegle', 'resources': 'vm:1'},
+        ]
+        self.assertEqual(_parse_ha_rules(rules, _PVE9_NODES), {'vm:1': {'hesperia', 'medusa'}})
+
+    def test_disabled_and_resource_affinity_ignored(self):
+        rules = [
+            {'type': 'node-affinity', 'strict': 1, 'disable': 1, 'nodes': 'aegle',
+             'resources': 'vm:1'},
+            {'type': 'resource-affinity', 'affinity': 'positive', 'resources': 'vm:1,vm:2'},
+        ]
+        self.assertEqual(_parse_ha_rules(rules, _PVE9_NODES), {})
+
+
+class TestClassifyHaRelocatablePve9(unittest.TestCase):
+    """Groups API errors on PVE 9 ('migrated to rules') → rules are used."""
+
+    def _ops(self):
+        ops = MagicMock()
+        ops.get_ha_resources.return_value = _parse_ha_resources(_load('ha_resources_pve9.json'))
+        ops.get_ha_groups.side_effect = RuntimeError('ha groups have been migrated to rules')
+        ops.get_ha_rule_placement.return_value = _parse_ha_rules(
+            _load('ha_rules.json'), _PVE9_NODES)
+        return ops
+
+    def test_strict_rule_survivor_relocatable(self):
+        relocatable, disable = _classify_ha_relocatable(self._ops(), {'hesperia'})
+        self.assertIn('vm:100', relocatable)
+        self.assertEqual(disable, [])
+
+    def test_strict_rule_all_nodes_down_non_relocatable(self):
+        relocatable, disable = _classify_ha_relocatable(self._ops(), {'aegle', 'hesperia'})
+        self.assertEqual(disable, ['vm:100'])
+        self.assertEqual(sorted(relocatable), ['vm:104', 'vm:106', 'vm:110'])
+
+    def test_non_strict_rule_always_relocatable(self):
+        relocatable, _ = _classify_ha_relocatable(
+            self._ops(), {'aegle', 'arethusa', 'erythia', 'hesperia'})
+        for sid in ['vm:104', 'vm:106', 'vm:110']:
+            self.assertIn(sid, relocatable)
 
 
 if __name__ == '__main__':

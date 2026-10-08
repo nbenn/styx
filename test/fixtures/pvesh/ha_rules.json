@@ -1,0 +1,4 @@
+[
+  {"affinity": "positive", "comment": "Direct internet access", "digest": "f869693cb124cb20af61ae55f299dc42e48c568e", "nodes": "aegle,hesperia", "order": 1, "resources": "vm:100", "rule": "ha-group-tartarus", "strict": 1, "type": "node-affinity"},
+  {"affinity": "positive", "comment": "Any node", "digest": "f869693cb124cb20af61ae55f299dc42e48c568e", "nodes": "aegle,arethusa,erythia,hesperia", "order": 2, "resources": "vm:104,vm:106,vm:110,vm:112", "rule": "ha-group-olmp", "strict": 0, "type": "node-affinity"}
+]

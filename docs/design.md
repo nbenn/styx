@@ -48,7 +48,7 @@ Styx auto-discovers the entire environment at startup. For standard setups, **no
    - If neither applies → skip k8s entirely (Proxmox-only mode).
    - If API is configured but unreachable → skip k8s (re-run scenario where k8s VMs are already off).
 4. **Ceph**: `pveceph status >/dev/null 2>&1` — exit 0 means Ceph is configured. If `[ceph] enabled` is explicitly set in config, that takes precedence.
-5. **HA**: `ha-manager status` → auto-detect HA-managed resources (phase >= 2 only). For partial shutdowns (`--hosts`), also queries `/cluster/ha/resources` and `/cluster/ha/groups` to classify VMs as relocatable vs non-relocatable.
+5. **HA**: `ha-manager status` → auto-detect HA-managed resources (phase >= 2 only). For partial shutdowns (`--hosts`), also queries `/cluster/ha/resources` and `/cluster/ha/groups` (PVE 8) or, where groups have been migrated, `/cluster/ha/rules` (PVE 9) to classify VMs as relocatable vs non-relocatable.
 
 All discovery uses `pvesh`/`ha-manager` which require quorum — but discovery runs at startup before any host is powered off, so quorum is guaranteed.
 
@@ -427,13 +427,17 @@ All HA resources are released unconditionally — there are no surviving nodes t
 
 For partial shutdowns, styx classifies each HA-managed VM on the target hosts as **relocatable** or **non-relocatable**, then handles them differently:
 
-**Relocatable** — the VM has somewhere to go:
-- No HA group assigned (can run on any node), OR
-- HA group is not `restricted` (can run on any node), OR
-- Restricted HA group has at least one member node NOT in the shutdown set
+A VM's placement is *restricted* if
+- PVE 8: it is in a `restricted` HA group (allowed nodes = the group's nodes), or
+- PVE 9 (groups migrated to rules; the groups API then errors): it is covered by an enabled, `strict` node-affinity rule. Positive rules limit it to their nodes, negative rules exclude theirs; several rules intersect. Non-strict rules are preferences only.
 
-**Non-relocatable** — no surviving group members:
-- Restricted HA group whose nodes are ALL in the shutdown set
+Node priorities (`node:2`) are ignored for this purpose.
+
+**Relocatable** — the VM has somewhere to go: placement not restricted, OR at least one allowed node is NOT in the shutdown set.
+
+**Non-relocatable** — every allowed node is in the shutdown set.
+
+Resource-affinity rules (keep VMs together/apart) are not modelled; if one makes a migration impossible, the migration wait times out with a warning.
 
 The partial-shutdown flow:
 

@@ -1,0 +1,7 @@
+[
+  {"digest": "76a7393c3ab9dc06b8ae62f623772c22387f1477", "sid": "vm:104", "state": "started", "type": "vm"},
+  {"digest": "76a7393c3ab9dc06b8ae62f623772c22387f1477", "sid": "vm:100", "state": "started", "type": "vm"},
+  {"digest": "76a7393c3ab9dc06b8ae62f623772c22387f1477", "sid": "vm:112", "state": "stopped", "type": "vm"},
+  {"digest": "76a7393c3ab9dc06b8ae62f623772c22387f1477", "sid": "vm:106", "state": "started", "type": "vm"},
+  {"digest": "76a7393c3ab9dc06b8ae62f623772c22387f1477", "sid": "vm:110", "state": "started", "type": "vm"}
+]
