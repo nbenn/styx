@@ -202,6 +202,8 @@ command="/opt/styx/gate.sh",restrict ssh-ed25519 AAAA... styx-trigger
 
 The `restrict` keyword disables all SSH features (pty, forwarding, tunnels) by default. The `command=` directive ensures the key can only invoke styx — regardless of what the SSH client requests, `gate.sh` only allows `orchestrate` and `-v`/`--version` and passes the arguments to the `styx.pyz` next to it. The config is therefore the default for a zipapp install: `/opt/styx/styx.conf`.
 
+`gate.sh` starts `--mode emergency` runs detached from the SSH session: it prints the PID and returns right away, and styx keeps running even if the connection drops (output goes to the styx log). This matters when the trigger runs inside the cluster being shut down, where the drain evicts it mid-run. If an emergency run is already in progress on that node, `gate.sh` does not start a second one. Dry-run and maintenance runs stay in the foreground, so their output and exit status reach the caller.
+
 **3. Install `trigger.sh`** on the UPS monitoring host and configure your UPS software to call it:
 
 ```bash
@@ -220,9 +222,12 @@ trigger --controllers 192.168.1.10 192.168.1.11 192.168.1.12
 
 # Custom SSH key path
 trigger --key /path/to/key --controllers 192.168.1.10 192.168.1.11 --mode emergency
+
+# Verify host keys instead of accepting any
+trigger --known-hosts /path/to/known_hosts --controllers 192.168.1.10 --mode emergency
 ```
 
-The trigger script tries each node in order and stops at the first one that responds. Any node can act as orchestrator, so if the primary is down, the next reachable node takes over. If a connection drops mid-run and the script falls through to another node, both runs can proceed safely — all styx operations are idempotent.
+The trigger script tries each node in order and stops at the first one that responds. Any node can act as orchestrator, so if the primary is down, the next reachable node takes over. Emergency runs return as soon as styx has started (see above); for dry-run and maintenance, if a connection drops mid-run and the script falls through to another node, both runs can proceed safely — all styx operations are idempotent.
 
 ### NUT integration
 
@@ -231,6 +236,128 @@ In `upsmon.conf` on the UPS monitoring host:
 ```
 SHUTDOWNCMD "/usr/local/bin/trigger --controllers 192.168.1.10 192.168.1.11 192.168.1.12 --mode emergency"
 ```
+
+### In-cluster UPS watcher (container image)
+
+Instead of `upsmon` on a separate host, a single pod in the cluster can watch the UPS. Each release publishes `ghcr.io/nbenn/styx-trigger:<version>` (and `latest`), whose `trigger.sh` matches the `gate.sh` of the same styx version. The image runs the NUT driver and `upsd` on 127.0.0.1 and polls `ups.status` every 10 s. When the UPS reports both `OB` (on battery) and `LB` (low battery) for `STYX_ONBATT_MIN` seconds, it runs `trigger.sh` once. When `OB`+`LB` clears, it resets. Every status change is logged.
+
+Set the runtime threshold on the UPS itself (APC: "Low Battery Duration"), so NUT reports the UPS's own `LB`. The minimum time on battery guards against an aged battery whose full-charge runtime is already below that threshold. `upsmon` is not used because it calls `SHUTDOWNCMD` immediately on `OB`+`LB` and then exits, expecting its own host to power off.
+
+| Variable | Default | |
+|---|---|---|
+| `STYX_CONTROLLERS` | (required) | space-separated node list for `trigger.sh` |
+| `STYX_MODE` | `dry-run` | `emergency` or `dry-run` |
+| `STYX_UPS` | `ups@127.0.0.1` | NUT UPS name |
+| `STYX_ONBATT_MIN` | `60` | seconds of `OB`+`LB` before triggering |
+| `STYX_POLL_INTERVAL` | `10` | seconds between polls |
+
+Mounted files:
+
+| Path | |
+|---|---|
+| `/config/nut/ups.conf` | NUT driver config, including SNMP credentials (required) |
+| `/config/ssh/id` | private key for `gate.sh` (required) |
+| `/config/ssh/known_hosts` | controller host keys (optional; without it, host keys are not checked) |
+
+The pod exits if the driver, `upsd` or the watcher dies, so Kubernetes restarts it. Example deployment, with one replica, `Recreate` so there is never a second watcher, and short `not-ready`/`unreachable` tolerations so it moves quickly off a failed node:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: styx-trigger-nut
+  namespace: styx
+stringData:
+  ups.conf: |
+    [ups]
+        driver = snmp-ups
+        port = 192.168.1.5
+        mibs = apcc
+        snmp_version = v3
+        secLevel = authPriv
+        secName = nut
+        authProtocol = SHA
+        authPassword = changeme
+        privProtocol = AES
+        privPassword = changeme
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: styx-trigger-ssh
+  namespace: styx
+stringData:
+  id: |
+    -----BEGIN OPENSSH PRIVATE KEY-----
+    ...
+    -----END OPENSSH PRIVATE KEY-----
+  known_hosts: |
+    192.168.1.10 ssh-ed25519 AAAA...
+    192.168.1.11 ssh-ed25519 AAAA...
+    192.168.1.12 ssh-ed25519 AAAA...
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: styx-trigger
+  namespace: styx
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: styx-trigger
+  template:
+    metadata:
+      labels:
+        app: styx-trigger
+    spec:
+      tolerations:
+        - key: node.kubernetes.io/not-ready
+          operator: Exists
+          effect: NoExecute
+          tolerationSeconds: 30
+        - key: node.kubernetes.io/unreachable
+          operator: Exists
+          effect: NoExecute
+          tolerationSeconds: 30
+      containers:
+        - name: styx-trigger
+          image: ghcr.io/nbenn/styx-trigger:0.4.4
+          env:
+            - name: STYX_CONTROLLERS
+              value: "192.168.1.10 192.168.1.11 192.168.1.12"
+            - name: STYX_MODE
+              value: emergency
+          volumeMounts:
+            - name: nut
+              mountPath: /config/nut
+              readOnly: true
+            - name: ssh
+              mountPath: /config/ssh
+              readOnly: true
+      volumes:
+        - name: nut
+          secret:
+            secretName: styx-trigger-nut
+        - name: ssh
+          secret:
+            secretName: styx-trigger-ssh
+```
+
+Start with `STYX_MODE=dry-run` and check the pod log and `/var/log/styx.log` on the controller before switching to `emergency`.
+
+To try the image locally without a UPS, use NUT's `dummy-ups` driver with the files in [`test/fixtures/nut`](test/fixtures/nut), and change the simulated status inside the container:
+
+```bash
+docker build -f container/Dockerfile -t styx-trigger .
+docker run -d --name styx-trigger -v "$PWD/test/fixtures/nut:/config/nut:ro" -v ~/.ssh/styx:/config/ssh/id:ro -e STYX_CONTROLLERS=192.168.1.10 -e STYX_MODE=dry-run styx-trigger
+docker exec styx-trigger sh -c 'echo "ups.status: OB LB" > /etc/nut/ups.dev'
+docker logs -f styx-trigger
+```
+
+`OB LB` for 60 s triggers one dry run; `OB` alone or `OL` does not.
 
 ### Other triggers
 

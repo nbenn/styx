@@ -103,6 +103,38 @@ case "${args[0]:-}" in
     *) echo "ERROR: only 'orchestrate' and '-v/--version' allowed" >&2; exit 1 ;;
 esac
 
+# Emergency runs are detached from the SSH session: the trigger may run inside
+# the cluster being shut down, and its connection drops once the drain evicts
+# it. Waiting would make trigger.sh fall through to the next node and start a
+# second orchestrator. Output goes to the styx log file anyway.
+mode="dry-run"
+for ((i = 1; i < ${#args[@]}; i++)); do
+    case "${args[i]}" in
+        --mode)   mode="${args[i+1]:-}" ;;
+        --mode=*) mode="${args[i]#--mode=}" ;;
+    esac
+done
+
+if [[ "${args[0]}" == orchestrate && "$mode" == emergency ]]; then
+    if pid="$(pgrep -f -- "$DIR/styx.pyz orchestrate" | head -n1)" && [[ -n "$pid" ]]; then
+        echo "styx orchestrate already running (pid ${pid})"
+        exit 0
+    fi
+    setsid nohup python3 "$DIR/styx.pyz" "${args[@]}" </dev/null >/dev/null 2>&1 &
+    pid=$!
+    # Catch immediate failures (bad arguments, unreadable config)
+    sleep 2
+    if ! kill -0 "$pid" 2>/dev/null; then
+        rc=0; wait "$pid" || rc=$?
+        if [[ $rc -ne 0 ]]; then
+            echo "ERROR: styx orchestrate exited with status ${rc}" >&2
+            exit "$rc"
+        fi
+    fi
+    echo "styx orchestrate started detached (pid ${pid}), see the styx log (default /var/log/styx.log)"
+    exit 0
+fi
+
 exec python3 "$DIR/styx.pyz" "${args[@]}"
 GATE
 }

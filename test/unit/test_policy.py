@@ -145,3 +145,35 @@ class TestMaintenancePolicy(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TestLogClosedStdout(unittest.TestCase):
+    """log() keeps writing to the log file after stdout goes away."""
+
+    def test_broken_stdout_does_not_raise(self):
+        import io, os, sys, tempfile
+        from unittest import mock
+        from styx import policy
+
+        class Broken(io.StringIO):
+            def write(self, s):
+                raise BrokenPipeError(32, 'Broken pipe')
+
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, 'styx.log')
+            old_fh = policy._log_fh
+            policy._log_fh = None   # setup_log_file would close it
+            try:
+                policy.setup_log_file(path)
+                with mock.patch.object(sys, 'stdout', Broken()):
+                    policy.log('first')
+                    policy.log('second')
+                    self.assertNotIsInstance(sys.stdout, Broken)
+                    sys.stdout.close()
+            finally:
+                policy._log_fh.close()
+                policy._log_fh = old_fh
+            with open(path) as f:
+                content = f.read()
+        self.assertIn('first', content)
+        self.assertIn('second', content)
