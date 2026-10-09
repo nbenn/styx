@@ -259,15 +259,16 @@ pvecm status   # Quorate: Yes
 
 **2. Clear Ceph OSD flags**
 
-Wait for all OSDs to come up, then unset the flags styx applied:
+Wait for all OSDs to come up — `ceph osd tree down` lists any that didn't — then unset the flags styx applied:
 
 ```bash
 ceph osd unset noout
 ceph osd unset norecover
 ceph osd unset norebalance
 ceph osd unset nobackfill
-ceph osd unset nodown
 ```
+
+If `nodown` is set (an older styx version or a manual `[ceph] flags` override), unset it **first**, before checking the OSDs: while it is set, an OSD that didn't come back still counts as up, and I/O to its placement groups hangs. Keep the other flags until every OSD is up again (or deliberately marked out), so Ceph doesn't start moving data for a disk that is only temporarily missing.
 
 Wait for Ceph to settle before starting VMs — active PGs should reach a healthy state:
 

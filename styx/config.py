@@ -6,9 +6,15 @@ All sections are optional; missing keys fall back to defaults.
 import configparser
 from dataclasses import dataclass, field
 
+# Only flags that stop data movement while hosts are deliberately down.
 # noup intentionally excluded: prevents OSDs coming back up after restart,
 # which is a post-boot concern, not a shutdown concern.
-DEFAULT_CEPH_FLAGS = ['noout', 'norecover', 'norebalance', 'nobackfill', 'nodown']
+# nodown intentionally excluded: vendor power-down procedures pair it with
+# `pause` (no client I/O). Styx sets flags while VMs still shut down, so an
+# OSD dying then would hang their I/O instead of failing over; and on the
+# next boot an OSD that doesn't come back still counts as up, hanging I/O
+# to its PGs (incl. VMs Ceph recovery may depend on) until nodown is unset.
+DEFAULT_CEPH_FLAGS = ['noout', 'norecover', 'norebalance', 'nobackfill']
 
 
 @dataclass

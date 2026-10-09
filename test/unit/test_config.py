@@ -26,6 +26,11 @@ class TestDefaults(unittest.TestCase):
         cfg = load_config('/nonexistent/path')
         self.assertNotIn('noup', cfg.ceph_flags)
 
+    def test_nodown_not_in_default_flags(self):
+        """nodown would keep an OSD that fails to return after the restart
+        marked up, hanging I/O to its PGs."""
+        self.assertNotIn('nodown', DEFAULT_CEPH_FLAGS)
+
 
 class TestHosts(unittest.TestCase):
 

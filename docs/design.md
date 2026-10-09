@@ -34,7 +34,7 @@ Styx auto-discovers the entire environment at startup. For standard setups, **no
 | K8s worker/CP VMIDs | Priority: (1) `[kubernetes] workers/control_plane` config, (2) API: match node names to VM names via `node-role.kubernetes.io/control-plane` label | `[kubernetes] workers, control_plane` |
 | K8s credentials | `[kubernetes] server` + `token` + optional `ca_cert` (required for API-based discovery) | — |
 | Ceph enabled | `pveceph status` exits 0 | `[ceph] enabled` |
-| Ceph flags (full runs) | defaults: `noout, norecover, norebalance, nobackfill, nodown` | `[ceph] flags` |
+| Ceph flags (full runs) | defaults: `noout, norecover, norebalance, nobackfill` | `[ceph] flags` |
 | Ceph noout (partial runs) | per-OSD `noout` on target hosts' OSDs (not configurable) | — |
 | Timeouts | defaults: drain=120, vm=120 | `[timeouts]` |
 
@@ -121,11 +121,15 @@ control_plane = 201, 202, 203
 # Override auto-detection (pveceph status)
 enabled = true
 # Override default flags for full-cluster runs
-# (default: noout, norecover, norebalance, nobackfill, nodown)
+# (default: noout, norecover, norebalance, nobackfill)
 # noup is NOT set by default: it prevents OSDs coming back up after restart,
 # which is a post-boot concern. Add it here only if you want to delay OSD start
 # on the next boot (e.g., to allow manual verification before OSDs come online).
-flags = noout, norecover, norebalance, nobackfill, nodown
+# nodown is NOT set by default either: vendor power-down procedures pair it
+# with `pause` (client I/O stopped). Styx sets flags while VMs still shut down,
+# and on the next boot an OSD that fails to come back would still count as up,
+# hanging I/O to its PGs until nodown is unset.
+flags = noout, norecover, norebalance, nobackfill
 # Partial --hosts runs use per-OSD noout (ceph osd add-noout osd.N) scoped to
 # only the target hosts' OSDs. This is not configurable — noout is the only
 # flag that supports per-OSD granularity and is appropriate for single-node
@@ -591,7 +595,9 @@ After power is restored:
 
 2. **Unset Ceph OSD flags** (if Ceph is enabled):
    ```bash
-   for flag in noout norecover norebalance nobackfill nodown; do
+   ceph osd unset nodown   # only if set (older styx, manual override) — first
+   ceph osd tree down      # every OSD must be up before unsetting the rest
+   for flag in noout norecover norebalance nobackfill; do
      ceph osd unset "$flag"
    done
    # Also unset noup if you set it manually at shutdown time:

@@ -27,9 +27,12 @@
 #control_plane = 201, 202, 203
 
 # Override Ceph detection (pveceph status) and OSD flags.
+# Default flags: noout, norecover, norebalance, nobackfill. Avoid nodown: an
+# OSD that fails to come back after the restart would still count as up and
+# hang I/O to its PGs until nodown is unset.
 #[ceph]
 #enabled = true
-#flags = noout, norecover, norebalance, nobackfill, nodown, noup
+#flags = noout, norecover, norebalance, nobackfill
 
 # Override log file path (default: /var/log/styx.log).
 # Can also be overridden via LOG_FILE env var (takes precedence).

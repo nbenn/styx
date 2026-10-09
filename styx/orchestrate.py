@@ -721,7 +721,7 @@ def _log_startup_checklist(topo, ceph_flags_set, osd_noout_ids=None,
         flags = ' '.join(ceph_flags_set)
         cmds = ' && '.join(f'ceph osd unset {f}' for f in ceph_flags_set)
         items.append((f'Ceph OSD flags set: {flags}',
-                      f'(after Ceph healthy) {cmds}'))
+                      f'(once all OSDs are up — check `ceph osd tree down`) {cmds}'))
 
     if released_sids:
         cmds = ' && '.join(f'ha-manager set {sid} --state started'
