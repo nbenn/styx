@@ -250,6 +250,8 @@ Set the runtime threshold on the UPS itself (APC: "Low Battery Duration"), so NU
 | `STYX_UPS` | `ups@127.0.0.1` | NUT UPS name |
 | `STYX_ONBATT_MIN` | `60` | seconds of `OB`+`LB` before triggering |
 | `STYX_POLL_INTERVAL` | `10` | seconds between polls |
+| `STYX_CHECK_INTERVAL` | `21600` | seconds between runs of `check` (see below), `0` to disable |
+| `STYX_SIMULATE_MAX` | `900` | seconds after which a `simulate` status expires |
 
 Mounted files:
 
@@ -259,7 +261,7 @@ Mounted files:
 | `/config/ssh/id` | private key for `gate.sh` (required) |
 | `/config/ssh/known_hosts` | controller host keys (optional; without it, host keys are not checked) |
 
-The pod exits if the driver, `upsd` or the watcher dies, so Kubernetes restarts it. Example deployment, with one replica, `Recreate` so there is never a second watcher, and short `not-ready`/`unreachable` tolerations so it moves quickly off a failed node:
+The pod exits if the driver, `upsd` or the watcher dies, so Kubernetes restarts it. The pod is ready once `check` has passed, so `kubectl get pods` shows a broken trigger path. Example deployment, with one replica, `Recreate` so there is never a second watcher, and short `not-ready`/`unreachable` tolerations so it moves quickly off a failed node:
 
 ```yaml
 apiVersion: v1
@@ -330,6 +332,10 @@ spec:
               value: "192.168.1.10 192.168.1.11 192.168.1.12"
             - name: STYX_MODE
               value: emergency
+          readinessProbe:
+            exec:
+              command: ["test", "-f", "/run/styx-trigger/ready"]
+            periodSeconds: 30
           volumeMounts:
             - name: nut
               mountPath: /config/nut
@@ -346,7 +352,51 @@ spec:
             secretName: styx-trigger-ssh
 ```
 
-Start with `STYX_MODE=dry-run` and check the pod log and `/var/log/styx.log` on the controller before switching to `emergency`.
+#### Testing a deployment
+
+Work through these steps in order. Steps 1–3 never shut anything down, so you can repeat them at any time, also with `STYX_MODE=emergency`.
+
+**1. UPS connection.** The pod log should show `status: <none> -> OL` within a few seconds of starting. That confirms the driver, the SNMP credentials and `upsd`. To see everything the UPS reports, including its configured low-battery threshold (`battery.runtime.low`, if the MIB exposes it):
+
+```bash
+kubectl exec -n styx deploy/styx-trigger -- upsc ups@127.0.0.1
+```
+
+**2. Trigger path to every controller.** `check` polls the UPS once, then runs `trigger.sh -v` against each controller on its own. `gate.sh` answers `-v` with the styx version, so this exercises the SSH key, host key, `authorized_keys` entry, `gate.sh` and `styx.pyz` on every node without running anything. A node running a different styx version than the image is reported with a warning.
+
+```bash
+kubectl exec -n styx deploy/styx-trigger -- check
+```
+```
+UPS ups@127.0.0.1: ok (OL)
+controller 192.168.1.10: ok (styx 0.4.4)
+controller 192.168.1.11: ok (styx 0.4.4)
+controller 192.168.1.12: FAILED (Host key verification failed.)
+some checks FAILED
+```
+
+The watcher also runs `check` 15 s after startup and then every `STYX_CHECK_INTERVAL` seconds, logging the result (`check: ...`) and setting the pod's readiness. This matters because `trigger.sh` stops at the first node that answers: a broken path to the second or third node would otherwise only show up during an outage, when the first one is already down.
+
+**3. The full trigger, in dry-run mode.** `simulate` makes the watcher see a status of your choosing. Everything after that runs for real: the `STYX_ONBATT_MIN` timer, `trigger.sh` with its fallback order, `gate.sh`, and `styx orchestrate --mode dry-run` on the controller, which runs the preflight checks and logs the full shutdown plan. A trigger caused by a simulated status always uses dry-run mode, whatever `STYX_MODE` says.
+
+```bash
+kubectl exec -n styx deploy/styx-trigger -- simulate "OB LB"
+kubectl logs -n styx -f deploy/styx-trigger
+kubectl exec -n styx deploy/styx-trigger -- simulate --clear
+```
+
+Read the plan in the pod log or in `/var/log/styx.log` on the controller that answered. A simulation ends by itself when the real UPS goes on battery, so it can never hide a real outage, and expires after `STYX_SIMULATE_MAX` seconds if you forget to clear it. `simulate "OB"` checks the other direction: on battery alone must not trigger.
+
+**4. Real outage drill.** This is the only step that tests that the UPS itself raises `LB`. With `STYX_MODE=dry-run`:
+
+1. Temporarily set the UPS's low-battery threshold (APC: "Low Battery Duration") above its current runtime, so `LB` appears soon after it goes on battery.
+2. Cut the UPS's input power (unplug it or switch off its breaker).
+3. Watch the pod log for `OL -> OB -> OB LB`, followed by a dry-run trigger `STYX_ONBATT_MIN` seconds later.
+4. Restore power and set the threshold back.
+
+The battery only drains for a few minutes. Switch to `STYX_MODE=emergency` afterwards.
+
+What these steps cannot cover is an emergency run surviving the eviction of the watcher pod. That path is covered by the tests in `test/integration/test_gate.py`; a full emergency run on a test cluster is the only way to see it in practice.
 
 To try the image locally without a UPS, use NUT's `dummy-ups` driver with the files in [`test/fixtures/nut`](test/fixtures/nut), and change the simulated status inside the container:
 
@@ -357,7 +407,7 @@ docker exec styx-trigger sh -c 'echo "ups.status: OB LB" > /etc/nut/ups.dev'
 docker logs -f styx-trigger
 ```
 
-`OB LB` for 60 s triggers one dry run; `OB` alone or `OL` does not.
+`OB LB` for 60 s triggers one dry run; `OB` alone or `OL` does not. Locally, `docker exec styx-trigger check` and `docker exec styx-trigger simulate "OB LB"` work the same way as in the cluster.
 
 ### Other triggers
 

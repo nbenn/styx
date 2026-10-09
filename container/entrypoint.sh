@@ -47,12 +47,10 @@ if [[ -z "${STYX_SSH_KEY:-}" ]]; then
         log "ERROR: ${SSH_CONFIG}/id not found (or set STYX_SSH_KEY)"
         exit 1
     fi
+    # trigger.sh's default key, so check and simulate run through
+    # `kubectl exec` use it as well
     install -d -m 0700 /root/.ssh
     install -m 0600 "${SSH_CONFIG}/id" /root/.ssh/styx
-    export STYX_SSH_KEY=/root/.ssh/styx
-fi
-if [[ -z "${STYX_KNOWN_HOSTS:-}" && -f "${SSH_CONFIG}/known_hosts" ]]; then
-    export STYX_KNOWN_HOSTS="${SSH_CONFIG}/known_hosts"
 fi
 
 # Run everything in the foreground and exit as soon as any of them does, so
@@ -61,7 +59,7 @@ log "starting NUT driver"
 upsdrvctl -F start &
 log "starting upsd"
 upsd -F &
-/usr/local/bin/watch.sh &
+"$(dirname "$(readlink -f "$0")")/watch.sh" &
 
 rc=0
 wait -n || rc=$?

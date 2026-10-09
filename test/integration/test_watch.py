@@ -1,4 +1,5 @@
-"""Tests for container/watch.sh — the NUT watcher in the styx-trigger image.
+"""Tests for container/watch.sh and simulate.sh — the NUT watcher in the
+styx-trigger image.
 
 upsc and trigger.sh are replaced by fakes: upsc returns one status per poll
 from a list (a line "FAIL" makes it fail), trigger.sh records its arguments.
@@ -14,6 +15,7 @@ import unittest
 
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 _WATCH = os.path.join(_REPO_ROOT, 'container', 'watch.sh')
+_SIMULATE = os.path.join(_REPO_ROOT, 'container', 'simulate.sh')
 
 _FAKE_UPSC = textwrap.dedent('''\
     #!/bin/bash
@@ -40,12 +42,20 @@ _FAKE_TRIGGER = textwrap.dedent('''\
     exit "$(cat "$FAKE_DIR/trigger_rc" 2>/dev/null || echo 0)"
 ''')
 
+_FAKE_CHECK = textwrap.dedent('''\
+    #!/bin/bash
+    echo run >> "$FAKE_DIR/checks"
+    echo "controller 10.0.0.1: ok (styx 0.4.4)"
+''')
+
 
 class TestWatch(unittest.TestCase):
 
     def setUp(self):
         self.dir = tempfile.mkdtemp()
-        for name, body in (('upsc', _FAKE_UPSC), ('trigger', _FAKE_TRIGGER)):
+        self.state = os.path.join(self.dir, 'state')
+        for name, body in (('upsc', _FAKE_UPSC), ('trigger', _FAKE_TRIGGER),
+                           ('check', _FAKE_CHECK)):
             path = os.path.join(self.dir, name)
             with open(path, 'w') as f:
                 f.write(body)
@@ -60,6 +70,10 @@ class TestWatch(unittest.TestCase):
             'FAKE_DIR': self.dir,
             'STYX_UPSC': os.path.join(self.dir, 'upsc'),
             'STYX_TRIGGER': os.path.join(self.dir, 'trigger'),
+            'STYX_CHECK': os.path.join(self.dir, 'check'),
+            'STYX_CHECK_INTERVAL': '0',
+            'STYX_STATE_DIR': self.state,
+            'SSH_CONFIG': os.path.join(self.dir, 'no-ssh-config'),
             'STYX_CONTROLLERS': '10.0.0.1 10.0.0.2',
             'STYX_POLL_INTERVAL': '0.05',
             'STYX_ONBATT_MIN': '0',
@@ -142,6 +156,60 @@ class TestWatch(unittest.TestCase):
                              STYX_SSH_KEY='/k/id', STYX_KNOWN_HOSTS='/k/known_hosts')
         self.assertEqual(calls, ['--controllers 10.0.0.1 10.0.0.2 --key /k/id '
                                  '--known-hosts /k/known_hosts --mode emergency'])
+
+    def _simulate(self, *args, **env):
+        return subprocess.run(['bash', _SIMULATE, *args], env=self._env(**env),
+                              capture_output=True, text=True, timeout=10)
+
+    def test_simulated_trigger_is_always_dry_run(self):
+        self._simulate('OB LB')
+        calls, out = self._run(['OL', 'OL', 'OL'], STYX_MODE='emergency')
+        self.assertEqual(calls, ['--controllers 10.0.0.1 10.0.0.2 --mode dry-run'])
+        self.assertIn('-> OB LB (simulated)', out)
+
+    def test_simulated_ob_alone_does_not_trigger(self):
+        self._simulate('OB')
+        calls, out = self._run(['OL', 'OL'])
+        self.assertEqual(calls, [])
+        self.assertIn('-> OB (simulated)', out)
+
+    def test_real_on_battery_ends_simulation(self):
+        self._simulate('OB LB')
+        calls, out = self._run(['OB', 'OB'])
+        self.assertEqual(calls, [])
+        self.assertIn('real UPS is on battery; ending simulation', out)
+        self.assertFalse(os.path.exists(os.path.join(self.state, 'simulate')))
+
+    def test_real_trigger_after_simulated_one_uses_configured_mode(self):
+        self._simulate('OB LB')
+        calls, _ = self._run(['OL', 'OB LB', 'OB LB'], STYX_MODE='emergency')
+        self.assertEqual(calls, ['--controllers 10.0.0.1 10.0.0.2 --mode dry-run',
+                                 '--controllers 10.0.0.1 10.0.0.2 --mode emergency'])
+
+    def test_simulation_expires(self):
+        os.makedirs(self.state)
+        with open(os.path.join(self.state, 'simulate'), 'w') as f:
+            f.write(f'{int(time.time()) - 1000} OB LB\n')
+        calls, out = self._run(['OL', 'OL'])
+        self.assertEqual(calls, [])
+        self.assertIn('simulation expired after 900s', out)
+
+    def test_simulate_set_show_clear(self):
+        r = self._simulate('OB LB')
+        self.assertIn("simulating 'OB LB'", r.stdout)
+        r = self._simulate()
+        self.assertRegex(r.stdout, r"simulating 'OB LB' for \d+s")
+        r = self._simulate('--clear')
+        self.assertFalse(os.path.exists(os.path.join(self.state, 'simulate')))
+        r = self._simulate()
+        self.assertIn('no simulation active', r.stdout)
+
+    def test_check_runs_at_startup_and_periodically(self):
+        calls, out = self._run(['OL'] * 40, STYX_CHECK_INTERVAL='1',
+                               STYX_CHECK_DELAY='0')
+        with open(os.path.join(self.dir, 'checks')) as f:
+            self.assertGreaterEqual(len(f.read().splitlines()), 2)
+        self.assertIn('check: controller 10.0.0.1: ok (styx 0.4.4)', out)
 
     def test_missing_controllers_fails(self):
         r = subprocess.run(['bash', _WATCH], env=self._env(STYX_CONTROLLERS=''),
