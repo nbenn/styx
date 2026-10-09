@@ -7,6 +7,8 @@ Three concrete modes:
 """
 
 import datetime
+import os
+import sys
 
 _log_fh = None
 
@@ -18,7 +20,7 @@ def _now():
 def setup_log_file(path):
     """Open path in append mode; subsequent log() calls tee there."""
     global _log_fh
-    import atexit, os
+    import atexit
     dirname = os.path.dirname(path)
     if dirname:
         os.makedirs(dirname, exist_ok=True)
@@ -31,7 +33,13 @@ def setup_log_file(path):
 def log(msg):
     ts = f'[{_now()}]'
     line = '\n'.join(f'{ts} {l}' for l in msg.split('\n'))
-    print(line, flush=True)
+    try:
+        print(line, flush=True)
+    except OSError:
+        # stdout is gone (e.g. the SSH session that started us dropped). Keep
+        # going: the log file still gets every line. Point stdout at devnull
+        # so later prints and the flush at exit do not raise again.
+        sys.stdout = open(os.devnull, 'w')
     if _log_fh is not None:
         print(line, file=_log_fh, flush=True)
 

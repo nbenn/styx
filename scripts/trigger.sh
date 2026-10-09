@@ -5,9 +5,11 @@
 # Tries each controller in order until one responds. Any node can act as
 # orchestrator, so the first reachable controller wins.
 #
-# Usage: trigger.sh --controllers HOST... [--key PATH] [--timeout SECS] [STYX_ARGS...]
+# Usage: trigger.sh --controllers HOST... [--key PATH] [--known-hosts PATH]
+#                   [--timeout SECS] [STYX_ARGS...]
 #   --controllers HOST...  Ordered list of node IPs/hostnames to try
 #   --key PATH             SSH private key (default: ~/.ssh/styx)
+#   --known-hosts PATH     Verify host keys against PATH (default: no checking)
 #   --timeout SECS         SSH connect timeout per node (default: 5)
 #   -v, --version          Show remote styx version
 #   -h, --help             Show this help message
@@ -28,6 +30,7 @@ set -euo pipefail
 
 KEY="${HOME}/.ssh/styx"
 TIMEOUT=5
+KNOWN_HOSTS=""
 CONTROLLERS=()
 STYX_ARGS=()
 styx_cmd=""
@@ -41,9 +44,10 @@ while [[ $# -gt 0 ]]; do
             done
             ;;
         --key)        KEY="$2"; shift 2 ;;
+        --known-hosts) KNOWN_HOSTS="$2"; shift 2 ;;
         --timeout)    TIMEOUT="$2"; shift 2 ;;
         -v|--version) styx_cmd="--version"; shift ;;
-        -h|--help)    sed -n '3,27s/^# //p' "$0"; exit 0 ;;
+        -h|--help)    sed -n '3,29s/^# //p' "$0"; exit 0 ;;
         -*)           STYX_ARGS+=("$1"); shift ;;
         *)            STYX_ARGS+=("$1"); shift ;;
     esac
@@ -54,6 +58,12 @@ if [[ ${#CONTROLLERS[@]} -eq 0 ]]; then
     exit 1
 fi
 
+if [[ -n "$KNOWN_HOSTS" ]]; then
+    HOSTKEY_OPTS=(-o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KNOWN_HOSTS")
+else
+    HOSTKEY_OPTS=(-o StrictHostKeyChecking=no)
+fi
+
 if [[ -z "$styx_cmd" ]]; then
     styx_cmd="orchestrate ${STYX_ARGS[*]}"
 fi
@@ -62,7 +72,7 @@ for node in "${CONTROLLERS[@]}"; do
     echo "Trying ${node}..."
     if ssh -o ConnectTimeout="$TIMEOUT" \
            -o BatchMode=yes \
-           -o StrictHostKeyChecking=no \
+           "${HOSTKEY_OPTS[@]}" \
            -o IdentitiesOnly=yes \
            -i "$KEY" \
            "root@${node}" \
